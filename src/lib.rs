@@ -32,6 +32,44 @@ impl Message {
     }
 }
 
+pub struct MessageSet {
+    bytes: Vec<u8>,
+}
+
+impl MessageSet {
+    pub fn new(msgs: Vec<Message>, offset: u64) -> MessageSet {
+        // encode bytes with
+        // 8: offset
+        // 4: size
+        // .: messages
+        let size: usize = msgs.iter().map(|m| 4 + m.payload().len()).sum();
+        let mut bytes = vec![0; 12 + size];
+        BigEndian::write_u64(&mut bytes[0..8], offset);
+        BigEndian::write_u32(&mut bytes[8..12], size as u32);
+
+        let mut pos = 12;
+        for m in msgs.iter() {
+            // serialize the message CRC32
+            BigEndian::write_u32(&mut bytes[pos..pos+4], m.crc());
+            pos += 4;
+
+            let mut copy_slice = &mut bytes[pos..pos+m.payload.len()];
+
+            // copy the bytes of the message payload
+            copy_slice.write_all(m.payload()).unwrap();
+            pos += m.payload.len();
+        }
+
+        MessageSet {
+            bytes: bytes,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 
 /// An index is a file with pairs of relative offset to file position offset
 /// messages. Both are stored as 4 bytes.
@@ -162,13 +200,69 @@ impl Index {
             }
         }
     }
+}
 
+pub struct Log {
+    f: File,
+    max_bytes: usize,
+    pos: usize,
+}
+
+#[derive(Debug)]
+pub enum LogAppendError {
+    LogFull,
+    IoError(io::Error),
+}
+
+impl From<std::io::Error> for LogAppendError {
+    fn from(e: std::io::Error) -> LogAppendError {
+        LogAppendError::IoError(e)
+    }
+}
+
+impl Log {
+    pub fn new<P>(p: P, max_bytes: usize) -> io::Result<Log>
+        where P: AsRef<Path>
+    {
+        let f = try!(OpenOptions::new()
+                     .write(true)
+                     .read(true)
+                     .create(true)
+                     .append(true)
+                     .open(p));
+        Ok(Log {
+            f: f,
+            max_bytes: max_bytes,
+            pos: 0,
+        })
+    }
+
+    pub fn can_write(&self) -> bool {
+        self.pos < self.max_bytes
+    }
+
+    pub fn append(&mut self, msgs: MessageSet) -> Result<u32, LogAppendError> {
+        // ensure we won't go over the max
+        if msgs.bytes().len() + self.pos > self.max_bytes {
+            return Err(LogAppendError::LogFull);
+        }
+
+        try!(self.f.write_all(msgs.bytes()));
+        let write_pos = self.pos;
+        self.pos += msgs.bytes().len();
+        Ok(write_pos as u32)
+    }
+
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.f.flush()
+    }
 }
 
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
     use super::*;
 
     #[test]
@@ -212,5 +306,28 @@ mod tests {
             assert_eq!(None, e2);
         }
         fs::remove_file(index_path).unwrap();
+    }
+
+    #[test]
+    pub fn log() {
+        let log_path = "target/.test-log";
+        fs::remove_file(log_path);
+        {
+            let mut f = Log::new(log_path, 1024).unwrap();
+
+            let m0 = Message::new(b"12345".to_vec());
+            let ms0 = MessageSet::new(vec![m0], 1000);
+            assert_eq!(ms0.bytes().len(), 21);
+            let p0 = f.append(ms0).unwrap();
+            assert_eq!(p0, 0);
+
+            let m1 = Message::new(b"66666".to_vec());
+            let m2 = Message::new(b"77777".to_vec());
+            let p1 = f.append(MessageSet::new(vec![m1, m2], 1001)).unwrap();
+            assert_eq!(p1, 21);
+
+            f.flush().unwrap();
+        }
+        fs::remove_file(log_path);
     }
 }
