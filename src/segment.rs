@@ -222,7 +222,7 @@ impl Log {
         let f = try!(OpenOptions::new()
             .write(true)
             .read(true)
-            .create(true)
+            .create_new(true)
             .append(true)
             .open(p));
         Ok(Log {
