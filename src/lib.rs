@@ -2,12 +2,15 @@ extern crate crc;
 extern crate memmap;
 extern crate byteorder;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
 use crc::crc32::checksum_ieee;
 use memmap::{Mmap, Protection};
 use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write};
+
+// TODO: ...
+// pub type Offset(u64);
 
 pub struct Message {
     crc: u32,
@@ -258,6 +261,89 @@ impl Log {
     }
 }
 
+pub struct Segment {
+    log: Log,
+    index: Index,
+    next_offset: u64,
+}
+
+#[derive(Debug)]
+pub enum SegmentAppendError {
+    LogFull,
+    IndexError(IndexWriteError),
+    IoError(io::Error),
+}
+
+impl From<io::Error> for SegmentAppendError {
+    fn from(e: io::Error) -> SegmentAppendError {
+        SegmentAppendError::IoError(e)
+    }
+}
+
+impl From<LogAppendError> for SegmentAppendError {
+    fn from(e: LogAppendError) -> SegmentAppendError {
+        match e {
+            LogAppendError::LogFull => SegmentAppendError::LogFull,
+            LogAppendError::IoError(e) => SegmentAppendError::IoError(e),
+        }
+    }
+}
+
+impl From<IndexWriteError> for SegmentAppendError {
+    fn from(e: IndexWriteError) -> SegmentAppendError {
+        SegmentAppendError::IndexError(e)
+    }
+}
+
+
+impl Segment {
+    // TODO: open variant for reading
+
+    pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize, index_bytes: usize) -> io::Result<Segment>
+        where P: AsRef<Path>
+    {
+        let log = {
+            let mut path_buf = PathBuf::new();
+            path_buf.push(&log_dir);
+            path_buf.push(format!("{:020}", base_offset));
+            path_buf.set_extension(".log");
+            try!(Log::new(&path_buf, max_bytes))
+        };
+
+        let index = {
+            let mut path_buf = PathBuf::new();
+            path_buf.push(&log_dir);
+            path_buf.push(format!("{:020}", base_offset));
+            path_buf.set_extension(".index");
+            try!(Index::new(&path_buf, index_bytes as u64, base_offset))
+        };
+
+        Ok(Segment {
+            log: log,
+            index: index,
+            next_offset: base_offset,
+        })
+    }
+
+    pub fn next_offset(&self) -> u64{
+        self.next_offset
+    }
+
+    pub fn append(&mut self, msgs: Vec<Message>) -> Result<u64, SegmentAppendError> {
+        if !self.index.can_write() || !self.log.can_write() {
+            return Err(SegmentAppendError::LogFull);
+        }
+
+        let off = self.next_offset;
+        let pos = try!(self.log.append(MessageSet::new(msgs, self.next_offset)));
+        try!(self.index.append(off, pos));
+
+        self.next_offset += 1;
+        Ok(off)
+    }
+
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -287,7 +373,7 @@ mod tests {
             index.flush_sync().unwrap();
         }
 
-        // reopen it
+        // reopen it for read
         {
             let index = Index::new(index_path, 1000u64, 10u64).unwrap();
 
