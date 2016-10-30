@@ -29,7 +29,7 @@ impl Message {
         let mut bytes = vec![0; 16 + payload.len()];
         BigEndian::write_u64(&mut bytes[0..8], offset);
         BigEndian::write_u32(&mut bytes[8..12], payload.len() as u32);
-        BigEndian::write_u32(&mut bytes[12..16], checksum_ieee(&payload));
+        BigEndian::write_u32(&mut bytes[12..16], checksum_ieee(payload));
         bytes[16..].copy_from_slice(payload);
         Message { bytes: bytes }
     }
@@ -136,11 +136,11 @@ impl Index {
 
     #[inline]
     pub fn can_write(&self) -> bool {
-        self.len() >= (self.next_write_offset + 8)
+        self.size() >= (self.next_write_offset + 8)
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.mmap.len()
     }
 
@@ -174,7 +174,7 @@ impl Index {
     }
 
     pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, IndexReadError> {
-        if self.len() < (i + 1) * 8 {
+        if self.size() < (i + 1) * 8 {
             return Err(IndexReadError::OutOfBounds);
         }
 
@@ -374,7 +374,7 @@ mod tests {
 
         {
             let mut index = Index::new(index_path, 1000u64, 10u64).unwrap();
-            assert_eq!(1000, index.len());
+            assert_eq!(1000, index.size());
             index.append(11u64, 0xffff).unwrap();
             index.append(12u64, 0xeeee).unwrap();
             index.flush_sync().unwrap();
