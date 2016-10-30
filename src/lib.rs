@@ -36,9 +36,7 @@ impl Message {
         BigEndian::write_u32(&mut bytes[8..12], payload.len() as u32);
         BigEndian::write_u32(&mut bytes[12..16], checksum_ieee(&payload));
         bytes[16..].copy_from_slice(payload);
-        Message {
-            bytes: bytes,
-        }
+        Message { bytes: bytes }
     }
 
     #[inline]
@@ -109,7 +107,7 @@ pub enum IndexWriteError {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum IndexReadError {
-    OutOfBounds
+    OutOfBounds,
 }
 
 impl Index {
@@ -166,8 +164,8 @@ impl Index {
             let offset = (abs_offset - self.base_offset) as u32;
             let buf_pos = self.next_write_offset;
 
-            BigEndian::write_u32(&mut mem_slice[buf_pos..buf_pos+4], offset);
-            BigEndian::write_u32(&mut mem_slice[buf_pos+4..buf_pos+8], position);
+            BigEndian::write_u32(&mut mem_slice[buf_pos..buf_pos + 4], offset);
+            BigEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
 
             self.next_write_offset += 8;
 
@@ -181,18 +179,18 @@ impl Index {
     }
 
     pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, IndexReadError> {
-        if self.len() < (i+1)*8 {
+        if self.len() < (i + 1) * 8 {
             return Err(IndexReadError::OutOfBounds);
         }
 
         unsafe {
             let mem_slice = self.mmap.as_slice();
-            let start = i*8;
-            let offset = BigEndian::read_u32(&mem_slice[start..start+4]);
+            let start = i * 8;
+            let offset = BigEndian::read_u32(&mem_slice[start..start + 4]);
             if offset == 0 && i > 0 {
                 Ok(None)
             } else {
-                let pos = BigEndian::read_u32(&mem_slice[start+4..start+8]);
+                let pos = BigEndian::read_u32(&mem_slice[start + 4..start + 8]);
                 Ok(Some(IndexEntry {
                     rel_offset: offset,
                     base_offset: self.base_offset,
@@ -227,11 +225,11 @@ impl Log {
         where P: AsRef<Path>
     {
         let f = try!(OpenOptions::new()
-                     .write(true)
-                     .read(true)
-                     .create(true)
-                     .append(true)
-                     .open(p));
+            .write(true)
+            .read(true)
+            .create(true)
+            .append(true)
+            .open(p));
         Ok(Log {
             f: f,
             max_bytes: max_bytes,
@@ -301,7 +299,11 @@ impl From<IndexWriteError> for SegmentAppendError {
 impl Segment {
     // TODO: open variant for reading
 
-    pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize, index_bytes: usize) -> io::Result<Segment>
+    pub fn new<P>(log_dir: P,
+                  base_offset: u64,
+                  max_bytes: usize,
+                  index_bytes: usize)
+                  -> io::Result<Segment>
         where P: AsRef<Path>
     {
         let log = {
@@ -328,7 +330,7 @@ impl Segment {
     }
 
     #[inline]
-    pub fn next_offset(&self) -> u64{
+    pub fn next_offset(&self) -> u64 {
         self.next_offset
     }
 
@@ -350,7 +352,6 @@ impl Segment {
         try!(self.index.flush_sync());
         self.log.flush()
     }
-
 }
 
 
@@ -432,7 +433,7 @@ mod tests {
         fs::remove_dir_all(log_path).unwrap_or(());
         fs::create_dir_all(log_path).unwrap_or(());
 
-        let mut seg = Segment::new(log_path, 100u64, 100*1024*1024, 10*1024*1024).unwrap();
+        let mut seg = Segment::new(log_path, 100u64, 100 * 1024 * 1024, 10 * 1024 * 1024).unwrap();
         let buf = b"01234567891011121314151617181920";
 
         b.iter(|| {
