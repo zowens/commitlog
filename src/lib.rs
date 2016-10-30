@@ -1,6 +1,8 @@
+#![feature(test)]
 extern crate crc;
 extern crate memmap;
 extern crate byteorder;
+extern crate test;
 
 use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
@@ -26,10 +28,12 @@ impl Message {
         }
     }
 
+    #[inline]
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
 
+    #[inline]
     pub fn crc(&self) -> u32 {
         self.crc
     }
@@ -68,6 +72,7 @@ impl MessageSet {
         }
     }
 
+    #[inline]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -96,10 +101,12 @@ impl IndexEntry {
         self.rel_offset
     }
 
+    #[inline]
     pub fn offset(&self) -> u64 {
         self.base_offset + (self.rel_offset as u64)
     }
 
+    #[inline]
     pub fn file_position(&self) -> u32 {
         self.file_pos
     }
@@ -145,10 +152,12 @@ impl Index {
         })
     }
 
+    #[inline]
     pub fn can_write(&self) -> bool {
         self.len() >= (self.next_write_offset + 8)
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.mmap.len()
     }
@@ -218,6 +227,7 @@ pub enum LogAppendError {
 }
 
 impl From<std::io::Error> for LogAppendError {
+    #[inline]
     fn from(e: std::io::Error) -> LogAppendError {
         LogAppendError::IoError(e)
     }
@@ -275,12 +285,14 @@ pub enum SegmentAppendError {
 }
 
 impl From<io::Error> for SegmentAppendError {
+    #[inline]
     fn from(e: io::Error) -> SegmentAppendError {
         SegmentAppendError::IoError(e)
     }
 }
 
 impl From<LogAppendError> for SegmentAppendError {
+    #[inline]
     fn from(e: LogAppendError) -> SegmentAppendError {
         match e {
             LogAppendError::LogFull => SegmentAppendError::LogFull,
@@ -290,6 +302,7 @@ impl From<LogAppendError> for SegmentAppendError {
 }
 
 impl From<IndexWriteError> for SegmentAppendError {
+    #[inline]
     fn from(e: IndexWriteError) -> SegmentAppendError {
         SegmentAppendError::IndexError(e)
     }
@@ -306,7 +319,7 @@ impl Segment {
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
-            path_buf.set_extension(".log");
+            path_buf.set_extension("log");
             try!(Log::new(&path_buf, max_bytes))
         };
 
@@ -314,7 +327,7 @@ impl Segment {
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
-            path_buf.set_extension(".index");
+            path_buf.set_extension("index");
             try!(Index::new(&path_buf, index_bytes as u64, base_offset))
         };
 
@@ -325,6 +338,7 @@ impl Segment {
         })
     }
 
+    #[inline]
     pub fn next_offset(&self) -> u64{
         self.next_offset
     }
@@ -342,6 +356,12 @@ impl Segment {
         Ok(off)
     }
 
+    // TODO: async flush strategy
+    pub fn flush_sync(&mut self) -> io::Result<()> {
+        try!(self.index.flush_sync());
+        self.log.flush()
+    }
+
 }
 
 
@@ -350,6 +370,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use super::*;
+    use test::Bencher;
 
     #[test]
     fn message_construction() {
@@ -415,5 +436,21 @@ mod tests {
             f.flush().unwrap();
         }
         fs::remove_file(log_path);
+    }
+
+    #[bench]
+    fn bench_segment_append(b: &mut Bencher) {
+        let log_path = "target/test-log";
+        fs::remove_dir_all(log_path).unwrap_or(());
+        fs::create_dir_all(log_path).unwrap_or(());
+
+        let mut seg = Segment::new(log_path, 100u64, 100*1024*1024, 10*1024*1024).unwrap();
+        let buf = b"01234567891011121314151617181920";
+
+        b.iter(|| {
+            seg.append(vec![Message::new(buf.to_vec())]).unwrap();
+        });
+
+        fs::remove_dir_all(log_path).unwrap_or(());
     }
 }
