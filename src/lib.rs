@@ -14,60 +14,29 @@ use std::io::{self, Write};
 // TODO: ...
 // pub type Offset(u64);
 
+
+/// Messages are appended to the log with the following encoding:
+///
+/// +-----------+--------------+
+/// | Bytes     | Value        |
+/// +-----------+--------------+
+/// | 0-7       | Offset       |
+/// | 8-11      | Payload Size |
+/// | 12-15     | CRC32 (IEEE) |
+/// | 16+       | Payload      |
+/// +-----------+--------------+
 pub struct Message {
-    crc: u32,
-    payload: Vec<u8>,
-}
-
-impl Message {
-    pub fn new(payload: Vec<u8>) -> Message {
-        let payload_crc = checksum_ieee(&payload);
-        Message {
-            crc: payload_crc,
-            payload: payload,
-        }
-    }
-
-    #[inline]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
-    #[inline]
-    pub fn crc(&self) -> u32 {
-        self.crc
-    }
-}
-
-pub struct MessageSet {
     bytes: Vec<u8>,
 }
 
-impl MessageSet {
-    pub fn new(msgs: Vec<Message>, offset: u64) -> MessageSet {
-        // encode bytes with
-        // 8: offset
-        // 4: size
-        // .: messages
-        let size: usize = msgs.iter().map(|m| 4 + m.payload().len()).sum();
-        let mut bytes = vec![0; 12 + size];
+impl Message {
+    pub fn new(payload: &[u8], offset: u64) -> Message {
+        let mut bytes = vec![0; 16 + payload.len()];
         BigEndian::write_u64(&mut bytes[0..8], offset);
-        BigEndian::write_u32(&mut bytes[8..12], size as u32);
-
-        let mut pos = 12;
-        for m in msgs.iter() {
-            // serialize the message CRC32
-            BigEndian::write_u32(&mut bytes[pos..pos+4], m.crc());
-            pos += 4;
-
-            let mut copy_slice = &mut bytes[pos..pos+m.payload.len()];
-
-            // copy the bytes of the message payload
-            copy_slice.write_all(m.payload()).unwrap();
-            pos += m.payload.len();
-        }
-
-        MessageSet {
+        BigEndian::write_u32(&mut bytes[8..12], payload.len() as u32);
+        BigEndian::write_u32(&mut bytes[12..16], checksum_ieee(&payload));
+        bytes[16..].copy_from_slice(payload);
+        Message {
             bytes: bytes,
         }
     }
@@ -76,14 +45,34 @@ impl MessageSet {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
-}
 
+    #[inline]
+    pub fn crc(&self) -> u32 {
+        BigEndian::read_u32(&self.bytes[12..16])
+    }
+
+    #[inline]
+    pub fn size(&self) -> u32 {
+        BigEndian::read_u32(&self.bytes[8..12])
+    }
+
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        BigEndian::read_u64(&self.bytes[0..8])
+    }
+
+    #[inline]
+    pub fn payload(&self) -> &[u8] {
+        &self.bytes[16..]
+    }
+}
 
 /// An index is a file with pairs of relative offset to file position offset
 /// messages. Both are stored as 4 bytes.
 pub struct Index {
     file: File,
     mmap: Mmap,
+
     /// next starting byte in index file offset to write
     next_write_offset: usize,
     base_offset: u64,
@@ -200,7 +189,7 @@ impl Index {
             let mem_slice = self.mmap.as_slice();
             let start = i*8;
             let offset = BigEndian::read_u32(&mem_slice[start..start+4]);
-            if offset == 0 {
+            if offset == 0 && i > 0 {
                 Ok(None)
             } else {
                 let pos = BigEndian::read_u32(&mem_slice[start+4..start+8]);
@@ -254,15 +243,15 @@ impl Log {
         self.pos < self.max_bytes
     }
 
-    pub fn append(&mut self, msgs: MessageSet) -> Result<u32, LogAppendError> {
+    pub fn append(&mut self, msg: Message) -> Result<u32, LogAppendError> {
         // ensure we won't go over the max
-        if msgs.bytes().len() + self.pos > self.max_bytes {
+        if msg.bytes().len() + self.pos > self.max_bytes {
             return Err(LogAppendError::LogFull);
         }
 
-        try!(self.f.write_all(msgs.bytes()));
+        try!(self.f.write_all(msg.bytes()));
         let write_pos = self.pos;
-        self.pos += msgs.bytes().len();
+        self.pos += msg.bytes().len();
         Ok(write_pos as u32)
     }
 
@@ -343,13 +332,13 @@ impl Segment {
         self.next_offset
     }
 
-    pub fn append(&mut self, msgs: Vec<Message>) -> Result<u64, SegmentAppendError> {
+    pub fn append(&mut self, msg: &[u8]) -> Result<u64, SegmentAppendError> {
         if !self.index.can_write() || !self.log.can_write() {
             return Err(SegmentAppendError::LogFull);
         }
 
         let off = self.next_offset;
-        let pos = try!(self.log.append(MessageSet::new(msgs, self.next_offset)));
+        let pos = try!(self.log.append(Message::new(msg, off)));
         try!(self.index.append(off, pos));
 
         self.next_offset += 1;
@@ -368,15 +357,16 @@ impl Segment {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::Write;
     use super::*;
     use test::Bencher;
 
     #[test]
     fn message_construction() {
-        let msg = Message::new(b"123456789".to_vec());
+        let msg = Message::new(b"123456789", 1234567u64);
+        assert_eq!(msg.offset(), 1234567u64);
         assert_eq!(msg.payload(), b"123456789");
         assert_eq!(msg.crc(), 0xcbf43926);
+        assert_eq!(msg.size(), 9u32);
     }
 
     #[test]
@@ -418,24 +408,22 @@ mod tests {
     #[test]
     pub fn log() {
         let log_path = "target/.test-log";
-        fs::remove_file(log_path);
+        fs::remove_file(log_path).unwrap_or(());
         {
             let mut f = Log::new(log_path, 1024).unwrap();
 
-            let m0 = Message::new(b"12345".to_vec());
-            let ms0 = MessageSet::new(vec![m0], 1000);
-            assert_eq!(ms0.bytes().len(), 21);
-            let p0 = f.append(ms0).unwrap();
+            let m0 = Message::new(b"12345", 1000);
+            assert_eq!(m0.bytes().len(), 21);
+            let p0 = f.append(m0).unwrap();
             assert_eq!(p0, 0);
 
-            let m1 = Message::new(b"66666".to_vec());
-            let m2 = Message::new(b"77777".to_vec());
-            let p1 = f.append(MessageSet::new(vec![m1, m2], 1001)).unwrap();
+            let m1 = Message::new(b"66666", 1001);
+            let p1 = f.append(m1).unwrap();
             assert_eq!(p1, 21);
 
             f.flush().unwrap();
         }
-        fs::remove_file(log_path);
+        fs::remove_file(log_path).unwrap();
     }
 
     #[bench]
@@ -448,7 +436,7 @@ mod tests {
         let buf = b"01234567891011121314151617181920";
 
         b.iter(|| {
-            seg.append(vec![Message::new(buf.to_vec())]).unwrap();
+            seg.append(buf).unwrap();
         });
 
         fs::remove_dir_all(log_path).unwrap_or(());
