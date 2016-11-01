@@ -6,10 +6,6 @@ use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write};
 use std;
 
-// TODO: ...
-// pub type Offset(u64);
-
-
 /// Messages are appended to the log with the following encoding:
 ///
 /// +-----------+--------------+
@@ -61,7 +57,7 @@ impl Message {
 }
 
 /// An index is a file with pairs of relative offset to file position offset
-/// messages. Both are stored as 4 bytes.
+/// of messages at the relative offset messages. The index is Memory Mapped.
 pub struct Index {
     file: File,
     mmap: Mmap,
@@ -79,6 +75,7 @@ pub struct IndexEntry {
 }
 
 impl IndexEntry {
+    #[inline]
     pub fn relative_offset(&self) -> u32 {
         self.rel_offset
     }
@@ -114,7 +111,7 @@ impl Index {
             .read(true)
             .write(true)
             .append(true)
-            .create(true)
+            .create_new(true)
             .open(path));
 
         // read the metadata and truncate
@@ -196,9 +193,14 @@ impl Index {
     }
 }
 
+/// The log is an append-only file with strictly montonically increasing offsets. The log
+/// returns a starting position of a message upon append. The size of the log is size-limited.
 pub struct Log {
-    f: File,
+    /// File descriptor
+    file: File,
+    /// Maximum number of bytes permitted to be appended to the log
     max_bytes: usize,
+    /// current file position for the write
     pos: usize,
 }
 
@@ -226,36 +228,45 @@ impl Log {
             .append(true)
             .open(p));
         Ok(Log {
-            f: f,
+            file: f,
             max_bytes: max_bytes,
             pos: 0,
         })
     }
 
+    #[inline]
     pub fn can_write(&self) -> bool {
         self.pos < self.max_bytes
     }
 
+    /// Appends a message to the log, returning the position in the log where
+    /// the message starts.
     pub fn append(&mut self, msg: Message) -> Result<u32, LogAppendError> {
-        // ensure we won't go over the max
+        // ensure we have the capacity
         if msg.bytes().len() + self.pos > self.max_bytes {
             return Err(LogAppendError::LogFull);
         }
 
-        try!(self.f.write_all(msg.bytes()));
+        // write to the log file, then to the index
+        try!(self.file.write_all(msg.bytes()));
         let write_pos = self.pos;
         self.pos += msg.bytes().len();
+
         Ok(write_pos as u32)
     }
 
+    #[inline]
     pub fn flush(&mut self) -> io::Result<()> {
-        self.f.flush()
+        self.file.flush()
     }
 }
 
 pub struct Segment {
+    /// Log file
     log: Log,
+    /// Index of offset to file position
     index: Index,
+    /// Next offset of the log
     next_offset: u64,
 }
 
@@ -302,6 +313,7 @@ impl Segment {
         where P: AsRef<Path>
     {
         let log = {
+            // the log is of the form BASE_OFFSET.log
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
@@ -310,6 +322,7 @@ impl Segment {
         };
 
         let index = {
+            // the index is of the form BASE_OFFSET.index
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
@@ -378,11 +391,6 @@ mod tests {
             index.append(11u64, 0xffff).unwrap();
             index.append(12u64, 0xeeee).unwrap();
             index.flush_sync().unwrap();
-        }
-
-        // reopen it for read
-        {
-            let index = Index::new(index_path, 1000u64, 10u64).unwrap();
 
             let e0 = index.read_entry(0).unwrap().unwrap();
             assert_eq!(1u32, e0.relative_offset());
