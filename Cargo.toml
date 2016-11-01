@@ -1,9 +1,12 @@
 [package]
+authors = ["Zack Owens <zowens2009@gmail.com>"]
 name = "commitlog"
 version = "0.1.0"
-authors = ["Zack Owens <zowens2009@gmail.com>"]
 
 [dependencies]
-crc = "1.3.0"
-memmap = "0.5.0"
 byteorder = "0.5.3"
+crc = "1.3.0"
+env_logger = "0.3.5"
+log = "0.3.6"
+memmap = "0.5.0"
+rand = "0.3"
