@@ -41,6 +41,21 @@ impl Default for LogOptions {
             index_max_bytes: 10 * 1024 * 1024,
         }
     }
+
+}
+
+impl LogOptions {
+    #[inline]
+    pub fn max_bytes_log(&mut self, bytes: usize) -> &mut LogOptions {
+        self.log_max_bytes = bytes;
+        self
+    }
+
+    #[inline]
+    pub fn max_log_items(&mut self, items: usize) -> &mut LogOptions {
+        self.index_max_bytes = items * segment::INDEX_ENTRY_BYTES;
+        self
+    }
 }
 
 pub struct CommitLog {

@@ -6,6 +6,8 @@ use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write};
 use std;
 
+pub static INDEX_ENTRY_BYTES: usize = 8;
+
 /// Messages are appended to the log with the following encoding:
 ///
 /// +-----------+--------------+
