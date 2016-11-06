@@ -17,6 +17,7 @@ use std::fs;
 use std::io;
 
 mod segment;
+mod index;
 #[cfg(test)]
 mod testutil;
 
@@ -57,13 +58,14 @@ impl LogOptions {
 
     #[inline]
     pub fn max_log_items(&mut self, items: usize) -> &mut LogOptions {
-        self.index_max_bytes = items * segment::INDEX_ENTRY_BYTES;
+        self.index_max_bytes = items * index::INDEX_ENTRY_BYTES;
         self
     }
 }
 
 pub struct CommitLog {
     active_segment: segment::Segment,
+    active_index: index::Index,
     log_dir: PathBuf,
     options: LogOptions,
 }
@@ -77,22 +79,35 @@ impl CommitLog {
 
         let owned_path = log_dir.as_ref().to_owned();
         info!("Opening log at path {:?}", owned_path.to_str());
-        let seg = try!(segment::Segment::new(&owned_path,
-                                             0u64,
-                                             opts.log_max_bytes,
-                                             opts.index_max_bytes));
+        let seg = try!(segment::Segment::new(&owned_path, 0u64, opts.log_max_bytes));
+        let ind = try!(index::Index::new(&owned_path, 0u64, opts.index_max_bytes));
+
         Ok(CommitLog {
             active_segment: seg,
+            active_index: ind,
             log_dir: owned_path,
             options: opts,
         })
     }
 
+    fn index_append(&mut self, offset: u64, pos: u32) -> Result<(), AppendError> {
+        match self.active_index.append(offset, pos) {
+            Ok(()) => Ok(()),
+            Err(index::IndexWriteError::IndexFull) => {
+                self.active_index.set_readonly();
+                self.active_index =
+                    try!(index::Index::new(&self.log_dir, offset, self.options.index_max_bytes));
+                self.index_append(offset, pos)
+            }
+            Err(index::IndexWriteError::OffsetLessThanBase) => unreachable!(),
+        }
+    }
+
     pub fn append(&mut self, payload: &[u8]) -> Result<Offset, AppendError> {
-        match self.active_segment.append(payload) {
-            Ok(offset) => {
-                trace!("Successfully appended message at offset {}", offset);
-                Ok(Offset(offset))
+        let meta = match self.active_segment.append(payload) {
+            Ok(meta) => {
+                trace!("Successfully appended message {:?}", meta);
+                meta
             }
             Err(segment::SegmentAppendError::LogFull) => {
                 // close segment
@@ -101,18 +116,17 @@ impl CommitLog {
                 info!("Closing segment at offset {}", next_offset);
                 self.active_segment = try!(segment::Segment::new(&self.log_dir,
                                                                  next_offset,
-                                                                 self.options.log_max_bytes,
-                                                                 self.options.index_max_bytes));
+                                                                 self.options.log_max_bytes));
 
                 // try again
-                self.append(payload)
+                return self.append(payload);
             }
-            Err(segment::SegmentAppendError::IndexError(_)) => {
-                // TODO: no idea
-                Err(AppendError::FileError)
+            Err(segment::SegmentAppendError::IoError(e)) => {
+                return Err(AppendError::IoError(e));
             }
-            Err(segment::SegmentAppendError::IoError(e)) => Err(AppendError::IoError(e)),
-        }
+        };
+        try!(self.index_append(meta.offset(), meta.file_pos()));
+        Ok(Offset(meta.offset()))
     }
 }
 

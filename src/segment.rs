@@ -1,12 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
 use crc::crc32::checksum_ieee;
-use memmap::{Mmap, Protection};
 use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write};
 use std;
 
-pub static INDEX_ENTRY_BYTES: usize = 8;
 
 /// Messages are appended to the log with the following encoding:
 ///
@@ -55,144 +53,6 @@ impl Message {
     #[inline]
     pub fn payload(&self) -> &[u8] {
         &self.bytes[16..]
-    }
-}
-
-/// An index is a file with pairs of relative offset to file position offset
-/// of messages at the relative offset messages. The index is Memory Mapped.
-pub struct Index {
-    file: File,
-    mmap: Mmap,
-
-    /// next starting byte in index file offset to write
-    next_write_pos: usize,
-    base_offset: u64,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct IndexEntry {
-    rel_offset: u32,
-    base_offset: u64,
-    file_pos: u32,
-}
-
-impl IndexEntry {
-    #[inline]
-    pub fn relative_offset(&self) -> u32 {
-        self.rel_offset
-    }
-
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.base_offset + (self.rel_offset as u64)
-    }
-
-    #[inline]
-    pub fn file_position(&self) -> u32 {
-        self.file_pos
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum IndexWriteError {
-    IndexFull,
-    OffsetLessThanBase,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum IndexReadError {
-    OutOfBounds,
-}
-
-impl Index {
-    pub fn new<P>(path: P, file_bytes: u64, base_offset: u64) -> io::Result<Index>
-        where P: AsRef<Path>
-    {
-        // open the file, expecting to create it
-        let index_file = try!(OpenOptions::new()
-            .read(true)
-            .write(true)
-            .append(true)
-            .create_new(true)
-            .open(path));
-
-        // read the metadata and truncate
-        let meta = try!(index_file.metadata());
-        let len = meta.len();
-        if len == 0 {
-            try!(index_file.set_len(file_bytes));
-        }
-
-        let mmap = try!(Mmap::open(&index_file, Protection::ReadWrite));
-
-        Ok(Index {
-            file: index_file,
-            mmap: mmap,
-            next_write_pos: len as usize,
-            base_offset: base_offset,
-        })
-    }
-
-    #[inline]
-    pub fn can_write(&self) -> bool {
-        self.size() >= (self.next_write_pos + 8)
-    }
-
-    #[inline]
-    pub fn size(&self) -> usize {
-        self.mmap.len()
-    }
-
-    pub fn append(&mut self, abs_offset: u64, position: u32) -> Result<(), IndexWriteError> {
-        assert!(abs_offset >= self.base_offset);
-
-        if !self.can_write() {
-            return Err(IndexWriteError::IndexFull);
-        }
-
-        if abs_offset < self.base_offset {
-            return Err(IndexWriteError::OffsetLessThanBase);
-        }
-
-        unsafe {
-            let mem_slice: &mut [u8] = self.mmap.as_mut_slice();
-            let offset = (abs_offset - self.base_offset) as u32;
-            let buf_pos = self.next_write_pos;
-
-            BigEndian::write_u32(&mut mem_slice[buf_pos..buf_pos + 4], offset);
-            BigEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
-
-            self.next_write_pos += 8;
-
-            Ok(())
-        }
-    }
-
-    pub fn flush_sync(&mut self) -> io::Result<()> {
-        try!(self.mmap.flush());
-        self.file.flush()
-    }
-
-    pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, IndexReadError> {
-        if self.size() < (i + 1) * 8 {
-            return Err(IndexReadError::OutOfBounds);
-        }
-
-        unsafe {
-            let mem_slice = self.mmap.as_slice();
-            let start = i * 8;
-            let offset = BigEndian::read_u32(&mem_slice[start..start + 4]);
-            if offset == 0 && i > 0 {
-                Ok(None)
-            } else {
-                let pos = BigEndian::read_u32(&mem_slice[start + 4..start + 8]);
-                Ok(Some(IndexEntry {
-                    rel_offset: offset,
-                    base_offset: self.base_offset,
-                    file_pos: pos,
-                }))
-            }
-        }
     }
 }
 
@@ -264,21 +124,20 @@ impl Log {
     }
 }
 
-/// A segment is a portion of the commit log. Segments are written to until either the maximum
-/// size is reached in the log, or the maximum number of messages have been appended.
+/// A segment is a portion of the commit log. Segments are written to until the maximum
+/// size is reached in the log.
 pub struct Segment {
     /// Log file
     log: Log,
-    /// Index of offset to file position
-    index: Index,
     /// Next offset of the log
     next_offset: u64,
+    /// Base offset of the log
+    base_offset: u64,
 }
 
 #[derive(Debug)]
 pub enum SegmentAppendError {
     LogFull,
-    IndexError(IndexWriteError),
     IoError(io::Error),
 }
 
@@ -299,24 +158,33 @@ impl From<LogAppendError> for SegmentAppendError {
     }
 }
 
-impl From<IndexWriteError> for SegmentAppendError {
+#[derive(Copy, Clone, Debug)]
+pub struct LogEntryMetadata {
+    offset: u64,
+    file_pos: u32,
+}
+
+impl LogEntryMetadata {
     #[inline]
-    fn from(e: IndexWriteError) -> SegmentAppendError {
-        SegmentAppendError::IndexError(e)
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    #[inline]
+    pub fn file_pos(&self) -> u32 {
+        self.file_pos
     }
 }
+
 
 
 impl Segment {
     // TODO: open variant for reading
 
-    pub fn new<P>(log_dir: P,
-                  base_offset: u64,
-                  max_bytes: usize,
-                  index_bytes: usize)
-                  -> io::Result<Segment>
+    pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize) -> io::Result<Segment>
         where P: AsRef<Path>
     {
+        // TODO: inline the log
         let log = {
             // the log is of the form BASE_OFFSET.log
             let mut path_buf = PathBuf::new();
@@ -326,19 +194,10 @@ impl Segment {
             try!(Log::new(&path_buf, max_bytes))
         };
 
-        let index = {
-            // the index is of the form BASE_OFFSET.index
-            let mut path_buf = PathBuf::new();
-            path_buf.push(&log_dir);
-            path_buf.push(format!("{:020}", base_offset));
-            path_buf.set_extension("index");
-            try!(Index::new(&path_buf, index_bytes as u64, base_offset))
-        };
-
         Ok(Segment {
             log: log,
-            index: index,
             next_offset: base_offset,
+            base_offset: base_offset,
         })
     }
 
@@ -349,25 +208,26 @@ impl Segment {
 
     #[inline]
     pub fn starting_offset(&self) -> u64 {
-        self.index.base_offset
+        self.base_offset
     }
 
-    pub fn append(&mut self, msg: &[u8]) -> Result<u64, SegmentAppendError> {
-        if !self.index.can_write() || !self.log.can_write() {
+    pub fn append(&mut self, msg: &[u8]) -> Result<LogEntryMetadata, SegmentAppendError> {
+        if !self.log.can_write() {
             return Err(SegmentAppendError::LogFull);
         }
 
         let off = self.next_offset;
         let pos = try!(self.log.append(Message::new(msg, off)));
-        try!(self.index.append(off, pos));
 
         self.next_offset += 1;
-        Ok(off)
+        Ok(LogEntryMetadata {
+            offset: off,
+            file_pos: pos,
+        })
     }
 
     // TODO: async flush strategy
     pub fn flush_sync(&mut self) -> io::Result<()> {
-        try!(self.index.flush_sync());
         self.log.flush()
     }
 }
@@ -380,8 +240,6 @@ mod tests {
     use test::Bencher;
     use super::super::testutil::*;
 
-
-
     #[test]
     fn message_construction() {
         let msg = Message::new(b"123456789", 1234567u64);
@@ -392,37 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn index() {
-        let index_path = "target/.test-index";
-        let _ = TestFile::new(index_path);
-
-        {
-            let mut index = Index::new(index_path, 1000u64, 10u64).unwrap();
-            assert_eq!(1000, index.size());
-            index.append(11u64, 0xffff).unwrap();
-            index.append(12u64, 0xeeee).unwrap();
-            index.flush_sync().unwrap();
-
-            let e0 = index.read_entry(0).unwrap().unwrap();
-            assert_eq!(1u32, e0.relative_offset());
-            assert_eq!(11u64, e0.offset());
-            assert_eq!(0xffff, e0.file_position());
-
-            let e1 = index.read_entry(1).unwrap().unwrap();
-            assert_eq!(2u32, e1.relative_offset());
-            assert_eq!(12u64, e1.offset());
-            assert_eq!(0xeeee, e1.file_position());
-
-            // read an entry that does not exist
-            let e2 = index.read_entry(2).unwrap();
-            assert_eq!(None, e2);
-        }
-    }
-
-    #[test]
     pub fn log() {
         let log_path = "target/.test-log";
-        let _ = TestFile::new(log_path);
+        fs::remove_file(&log_path).unwrap_or(());
         {
             let mut f = Log::new(log_path, 1024).unwrap();
 
@@ -437,6 +267,7 @@ mod tests {
 
             f.flush().unwrap();
         }
+        fs::remove_file(&log_path).unwrap_or(());
     }
 
     #[bench]
@@ -445,7 +276,7 @@ mod tests {
         fs::remove_dir_all(log_path).unwrap_or(());
         fs::create_dir_all(log_path).unwrap_or(());
 
-        let mut seg = Segment::new(log_path, 100u64, 100 * 1024 * 1024, 10 * 1024 * 1024).unwrap();
+        let mut seg = Segment::new(log_path, 100u64, 100 * 1024 * 1024).unwrap();
         let buf = b"01234567891011121314151617181920";
 
         b.iter(|| {
