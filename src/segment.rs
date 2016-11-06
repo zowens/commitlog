@@ -3,7 +3,6 @@ use std::fs::{OpenOptions, File};
 use crc::crc32::checksum_ieee;
 use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write};
-use std;
 
 
 /// Messages are appended to the log with the following encoding:
@@ -36,99 +35,41 @@ impl Message {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn crc(&self) -> u32 {
         BigEndian::read_u32(&self.bytes[12..16])
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn size(&self) -> u32 {
         BigEndian::read_u32(&self.bytes[8..12])
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn offset(&self) -> u64 {
         BigEndian::read_u64(&self.bytes[0..8])
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn payload(&self) -> &[u8] {
         &self.bytes[16..]
     }
 }
 
-/// The log is an append-only file with strictly montonically increasing offsets. The log
-/// returns a starting position of a message upon append. The size of the log is size-limited.
-pub struct Log {
+
+/// A segment is a portion of the commit log. Segments are append-only logs written
+/// until the maximum size is reached.
+pub struct Segment {
     /// File descriptor
     file: File,
     /// Maximum number of bytes permitted to be appended to the log
     max_bytes: usize,
     /// current file position for the write
     pos: usize,
-}
 
-#[derive(Debug)]
-pub enum LogAppendError {
-    LogFull,
-    IoError(io::Error),
-}
-
-impl From<std::io::Error> for LogAppendError {
-    #[inline]
-    fn from(e: std::io::Error) -> LogAppendError {
-        LogAppendError::IoError(e)
-    }
-}
-
-impl Log {
-    pub fn new<P>(p: P, max_bytes: usize) -> io::Result<Log>
-        where P: AsRef<Path>
-    {
-        let f = try!(OpenOptions::new()
-            .write(true)
-            .read(true)
-            .create_new(true)
-            .append(true)
-            .open(p));
-        Ok(Log {
-            file: f,
-            max_bytes: max_bytes,
-            pos: 0,
-        })
-    }
-
-    #[inline]
-    pub fn can_write(&self) -> bool {
-        self.pos < self.max_bytes
-    }
-
-    /// Appends a message to the log, returning the position in the log where
-    /// the message starts.
-    pub fn append(&mut self, msg: Message) -> Result<u32, LogAppendError> {
-        // ensure we have the capacity
-        if msg.bytes().len() + self.pos > self.max_bytes {
-            return Err(LogAppendError::LogFull);
-        }
-
-        // write to the log file, then to the index
-        try!(self.file.write_all(msg.bytes()));
-        let write_pos = self.pos;
-        self.pos += msg.bytes().len();
-
-        Ok(write_pos as u32)
-    }
-
-    #[inline]
-    pub fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
-
-/// A segment is a portion of the commit log. Segments are written to until the maximum
-/// size is reached in the log.
-pub struct Segment {
-    /// Log file
-    log: Log,
     /// Next offset of the log
     next_offset: u64,
     /// Base offset of the log
@@ -148,16 +89,7 @@ impl From<io::Error> for SegmentAppendError {
     }
 }
 
-impl From<LogAppendError> for SegmentAppendError {
-    #[inline]
-    fn from(e: LogAppendError) -> SegmentAppendError {
-        match e {
-            LogAppendError::LogFull => SegmentAppendError::LogFull,
-            LogAppendError::IoError(e) => SegmentAppendError::IoError(e),
-        }
-    }
-}
-
+/// Holds the pair of offset written to file position in the segment file.
 #[derive(Copy, Clone, Debug)]
 pub struct LogEntryMetadata {
     offset: u64,
@@ -184,18 +116,27 @@ impl Segment {
     pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize) -> io::Result<Segment>
         where P: AsRef<Path>
     {
-        // TODO: inline the log
-        let log = {
+        let log_path = {
             // the log is of the form BASE_OFFSET.log
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
             path_buf.set_extension("log");
-            try!(Log::new(&path_buf, max_bytes))
+            path_buf
         };
 
+        let f = try!(OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create_new(true)
+            .append(true)
+            .open(&log_path));
+
         Ok(Segment {
-            log: log,
+            file: f,
+            max_bytes: max_bytes,
+            pos: 0,
+
             next_offset: base_offset,
             base_offset: base_offset,
         })
@@ -207,35 +148,40 @@ impl Segment {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn starting_offset(&self) -> u64 {
         self.base_offset
     }
 
-    pub fn append(&mut self, msg: &[u8]) -> Result<LogEntryMetadata, SegmentAppendError> {
-        if !self.log.can_write() {
+    pub fn append(&mut self, payload: &[u8]) -> Result<LogEntryMetadata, SegmentAppendError> {
+        let off = self.next_offset;
+        let msg = Message::new(payload, off);
+        // ensure we have the capacity
+        if msg.bytes().len() + self.pos > self.max_bytes {
             return Err(SegmentAppendError::LogFull);
         }
 
-        let off = self.next_offset;
-        let pos = try!(self.log.append(Message::new(msg, off)));
+        try!(self.file.write_all(msg.bytes()));
+        let write_pos = self.pos;
 
+        self.pos += msg.bytes().len();
         self.next_offset += 1;
+
         Ok(LogEntryMetadata {
             offset: off,
-            file_pos: pos,
+            file_pos: write_pos as u32,
         })
     }
 
     // TODO: async flush strategy
     pub fn flush_sync(&mut self) -> io::Result<()> {
-        self.log.flush()
+        self.file.flush()
     }
 }
 
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use super::*;
     use test::Bencher;
     use super::super::testutil::*;
@@ -251,38 +197,29 @@ mod tests {
 
     #[test]
     pub fn log() {
-        let log_path = "target/.test-log";
-        fs::remove_file(&log_path).unwrap_or(());
-        {
-            let mut f = Log::new(log_path, 1024).unwrap();
+        let path = TestDir::new();
+        let mut f = Segment::new(path, 0, 1024).unwrap();
 
-            let m0 = Message::new(b"12345", 1000);
-            assert_eq!(m0.bytes().len(), 21);
-            let p0 = f.append(m0).unwrap();
-            assert_eq!(p0, 0);
+        let p0 = f.append(b"12345").unwrap();
+        assert_eq!(p0.offset(), 0);
+        assert_eq!(p0.file_pos(), 0);
 
-            let m1 = Message::new(b"66666", 1001);
-            let p1 = f.append(m1).unwrap();
-            assert_eq!(p1, 21);
+        let p1 = f.append(b"66666").unwrap();
+        assert_eq!(p1.offset(), 1);
+        assert_eq!(p1.file_pos(), 21);
 
-            f.flush().unwrap();
-        }
-        fs::remove_file(&log_path).unwrap_or(());
+        f.flush_sync().unwrap();
     }
 
     #[bench]
     fn bench_segment_append(b: &mut Bencher) {
-        let log_path = "target/test-log";
-        fs::remove_dir_all(log_path).unwrap_or(());
-        fs::create_dir_all(log_path).unwrap_or(());
+        let path = TestDir::new();
 
-        let mut seg = Segment::new(log_path, 100u64, 100 * 1024 * 1024).unwrap();
+        let mut seg = Segment::new(path, 100u64, 100 * 1024 * 1024).unwrap();
         let buf = b"01234567891011121314151617181920";
 
         b.iter(|| {
             seg.append(buf).unwrap();
         });
-
-        fs::remove_dir_all(log_path).unwrap_or(());
     }
 }

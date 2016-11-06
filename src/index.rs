@@ -3,7 +3,6 @@ use memmap::{Mmap, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use std::fs::{OpenOptions, File};
-use std;
 
 /// Number of byes in each entry pair
 pub static INDEX_ENTRY_BYTES: usize = 8;
@@ -12,7 +11,6 @@ pub static INDEX_ENTRY_BYTES: usize = 8;
 /// of messages at the relative offset messages. The index is Memory Mapped.
 pub struct Index {
     file: File,
-    file_path: PathBuf,
     mmap: Mmap,
     mode: AccessMode,
 
@@ -39,16 +37,19 @@ pub struct IndexEntry {
 
 impl IndexEntry {
     #[inline]
+    #[allow(dead_code)]
     pub fn relative_offset(&self) -> u32 {
         self.rel_offset
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn offset(&self) -> u64 {
         self.base_offset + (self.rel_offset as u64)
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn file_position(&self) -> u32 {
         self.file_pos
     }
@@ -70,7 +71,7 @@ impl Index {
         where P: AsRef<Path>
     {
         // open the file, expecting to create it
-        let mut index_path = {
+        let index_path = {
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
@@ -96,7 +97,6 @@ impl Index {
 
         Ok(Index {
             file: index_file,
-            file_path: index_path,
             mmap: mmap,
             mode: AccessMode::ReadWrite,
             next_write_pos: 0,
@@ -138,16 +138,13 @@ impl Index {
         }
     }
 
-    pub fn set_readonly(&mut self) {
+    pub fn set_readonly(&mut self) -> io::Result<()> {
         if self.mode != AccessMode::Read {
             self.mode = AccessMode::Read;
-            self.file.flush();
+            self.flush_sync()
+        } else {
+            Ok(())
         }
-    }
-
-    #[inline]
-    pub fn file_path(&self) -> &Path {
-        self.file_path.as_path()
     }
 
     pub fn flush_sync(&mut self) -> io::Result<()> {
@@ -155,6 +152,7 @@ impl Index {
         self.file.flush()
     }
 
+    #[allow(dead_code)]
     pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, IndexReadError> {
         if self.size() < (i + 1) * 8 {
             return Err(IndexReadError::OutOfBounds);
@@ -180,14 +178,13 @@ impl Index {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use super::*;
     use super::super::testutil::*;
 
     #[test]
     fn index() {
-        let mut index = Index::new("target", 9u64, 1000usize).unwrap();
-        let _ = TestFile::new(index.file_path());
+        let path = TestDir::new();
+        let mut index = Index::new(&path, 9u64, 1000usize).unwrap();
 
         assert_eq!(1000, index.size());
         index.append(11u64, 0xffff).unwrap();
@@ -211,14 +208,14 @@ mod tests {
 
     #[test]
     fn index_set_readonly() {
-        let mut index = Index::new("target", 10u64, 1000usize).unwrap();
-        let _ = TestFile::new(index.file_path());
+        let path = TestDir::new();
+        let mut index = Index::new(&path, 10u64, 1000usize).unwrap();
 
         index.append(11u64, 0xffff).unwrap();
         index.append(12u64, 0xeeee).unwrap();
 
         // set_readonly it
-        index.set_readonly();
+        index.set_readonly().expect("Unable to set readonly");
 
         // append should fail with insertion error
         assert_eq!(index.append(13u64, 0xeeeeee),

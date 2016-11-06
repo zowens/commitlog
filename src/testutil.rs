@@ -1,23 +1,31 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use rand::{Rng, OsRng};
 
-pub struct TestFile<'a> {
-    path: &'a Path,
+pub struct TestDir {
+    path: PathBuf,
 }
 
-impl<'a> TestFile<'a> {
-    pub fn new(path: &'a Path) -> TestFile<'a> {
-        TestFile { path: path }
-    }
-
-    pub fn new_fresh(path: &'a Path) -> TestFile<'a> {
-        fs::remove_file(path).unwrap_or(());
-        TestFile { path: path }
+impl TestDir {
+    pub fn new() -> TestDir {
+        let mut rng = OsRng::new().unwrap();
+        let mut path_buf = PathBuf::new();
+        path_buf.push("target");
+        path_buf.push("test-data");
+        path_buf.push(format!("test-{:020}", rng.gen::<u64>()));
+        fs::create_dir_all(&path_buf).unwrap();
+        TestDir { path: path_buf }
     }
 }
 
-impl<'a> Drop for TestFile<'a> {
+impl Drop for TestDir {
     fn drop(&mut self) {
-        fs::remove_file(self.path).unwrap_or(());
+        fs::remove_dir_all(&self).expect("Unable to delete test data directory");
+    }
+}
+
+impl AsRef<Path> for TestDir {
+    fn as_ref(&self) -> &Path {
+        self.path.as_ref()
     }
 }

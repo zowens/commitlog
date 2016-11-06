@@ -1,4 +1,7 @@
 #![feature(test)]
+// This is silly...
+#![allow(unused_features)]
+
 #[macro_use]
 extern crate log;
 extern crate crc;
@@ -11,7 +14,6 @@ extern crate test;
 #[cfg(test)]
 extern crate rand;
 
-use log::LogLevel;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io;
@@ -94,7 +96,7 @@ impl CommitLog {
         match self.active_index.append(offset, pos) {
             Ok(()) => Ok(()),
             Err(index::IndexWriteError::IndexFull) => {
-                self.active_index.set_readonly();
+                try!(self.active_index.set_readonly());
                 self.active_index =
                     try!(index::Index::new(&self.log_dir, offset, self.options.index_max_bytes));
                 self.index_append(offset, pos)
@@ -128,31 +130,9 @@ impl CommitLog {
         try!(self.index_append(meta.offset(), meta.file_pos()));
         Ok(Offset(meta.offset()))
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use test::*;
-    use super::*;
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use env_logger;
-    use rand::{self, Rng};
-
-    #[bench]
-    fn benchmark_append(b: &mut test::Bencher) {
-        let mut rng = rand::OsRng::new().unwrap();
-
-        let mut path = PathBuf::new();
-        path.push("target");
-        path.push(format!("logbench{}", rng.gen::<u64>()));
-
-        let mut log = CommitLog::new(&path, LogOptions::default()).unwrap();
-        let msg = b"0123456789abcdefghijklmnopqrstuvwxyz";
-        b.iter(|| {
-            log.append(msg).unwrap();
-        });
-
-        fs::remove_dir_all(&path).unwrap();
+    pub fn flush(&mut self) -> io::Result<()> {
+        try!(self.active_segment.flush_sync());
+        self.active_index.flush_sync()
     }
 }
