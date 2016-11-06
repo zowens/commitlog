@@ -65,7 +65,7 @@ pub struct Index {
     mmap: Mmap,
 
     /// next starting byte in index file offset to write
-    next_write_offset: usize,
+    next_write_pos: usize,
     base_offset: u64,
 }
 
@@ -128,14 +128,14 @@ impl Index {
         Ok(Index {
             file: index_file,
             mmap: mmap,
-            next_write_offset: len as usize,
+            next_write_pos: len as usize,
             base_offset: base_offset,
         })
     }
 
     #[inline]
     pub fn can_write(&self) -> bool {
-        self.size() >= (self.next_write_offset + 8)
+        self.size() >= (self.next_write_pos + 8)
     }
 
     #[inline]
@@ -144,7 +144,8 @@ impl Index {
     }
 
     pub fn append(&mut self, abs_offset: u64, position: u32) -> Result<(), IndexWriteError> {
-        // TODO: test to ensure abs_offset is < last offset written (invariant of the index)
+        assert!(abs_offset >= self.base_offset);
+
         if !self.can_write() {
             return Err(IndexWriteError::IndexFull);
         }
@@ -156,12 +157,12 @@ impl Index {
         unsafe {
             let mem_slice: &mut [u8] = self.mmap.as_mut_slice();
             let offset = (abs_offset - self.base_offset) as u32;
-            let buf_pos = self.next_write_offset;
+            let buf_pos = self.next_write_pos;
 
             BigEndian::write_u32(&mut mem_slice[buf_pos..buf_pos + 4], offset);
             BigEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
 
-            self.next_write_offset += 8;
+            self.next_write_pos += 8;
 
             Ok(())
         }
@@ -263,6 +264,8 @@ impl Log {
     }
 }
 
+/// A segment is a portion of the commit log. Segments are written to until either the maximum
+/// size is reached in the log, or the maximum number of messages have been appended.
 pub struct Segment {
     /// Log file
     log: Log,
@@ -342,6 +345,11 @@ impl Segment {
     #[inline]
     pub fn next_offset(&self) -> u64 {
         self.next_offset
+    }
+
+    #[inline]
+    pub fn starting_offset(&self) -> u64 {
+        self.index.base_offset
     }
 
     pub fn append(&mut self, msg: &[u8]) -> Result<u64, SegmentAppendError> {

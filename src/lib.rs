@@ -1,12 +1,15 @@
 #![feature(test)]
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate crc;
 extern crate memmap;
 extern crate byteorder;
 extern crate env_logger;
 
-#[cfg(test)] extern crate test;
-#[cfg(test)] extern crate rand;
+#[cfg(test)]
+extern crate test;
+#[cfg(test)]
+extern crate rand;
 
 use log::LogLevel;
 use std::path::{Path, PathBuf};
@@ -38,10 +41,9 @@ impl Default for LogOptions {
     fn default() -> LogOptions {
         LogOptions {
             log_max_bytes: 100 * 1024 * 1024,
-            index_max_bytes: 10 * 1024 * 1024,
+            index_max_bytes: 800_000,
         }
     }
-
 }
 
 impl LogOptions {
@@ -66,14 +68,17 @@ pub struct CommitLog {
 
 impl CommitLog {
     pub fn new<P>(log_dir: P, opts: LogOptions) -> io::Result<CommitLog>
-        where P : AsRef<Path>
+        where P: AsRef<Path>
     {
         // TODO: figure out what's already been written to
         fs::create_dir_all(&log_dir).unwrap_or(());
 
         let owned_path = log_dir.as_ref().to_owned();
         info!("Opening log at path {:?}", owned_path.to_str());
-        let seg = try!(segment::Segment::new(&owned_path, 0u64, opts.log_max_bytes, opts.index_max_bytes));
+        let seg = try!(segment::Segment::new(&owned_path,
+                                             0u64,
+                                             opts.log_max_bytes,
+                                             opts.index_max_bytes));
         Ok(CommitLog {
             active_segment: seg,
             log_dir: owned_path,
@@ -86,25 +91,24 @@ impl CommitLog {
             Ok(offset) => {
                 trace!("Successfully appended message at offset {}", offset);
                 Ok(Offset(offset))
-            },
+            }
             Err(segment::SegmentAppendError::LogFull) => {
                 // close segment
                 try!(self.active_segment.flush_sync());
                 let next_offset = self.active_segment.next_offset();
                 info!("Closing segment at offset {}", next_offset);
-                self.active_segment = try!(segment::Segment::new(
-                    &self.log_dir,
-                    next_offset,
-                    self.options.log_max_bytes,
-                    self.options.index_max_bytes));
+                self.active_segment = try!(segment::Segment::new(&self.log_dir,
+                                                                 next_offset,
+                                                                 self.options.log_max_bytes,
+                                                                 self.options.index_max_bytes));
 
                 // try again
                 self.append(payload)
-            },
+            }
             Err(segment::SegmentAppendError::IndexError(_)) => {
                 // TODO: no idea
                 Err(AppendError::FileError)
-            },
+            }
             Err(segment::SegmentAppendError::IoError(e)) => Err(AppendError::IoError(e)),
         }
     }
