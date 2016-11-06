@@ -17,6 +17,8 @@ use std::fs;
 use std::io;
 
 mod segment;
+#[cfg(test)]
+mod testutil;
 
 pub struct Offset(u64);
 

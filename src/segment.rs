@@ -378,6 +378,9 @@ mod tests {
     use std::fs;
     use super::*;
     use test::Bencher;
+    use super::super::testutil::*;
+
+
 
     #[test]
     fn message_construction() {
@@ -391,9 +394,7 @@ mod tests {
     #[test]
     fn index() {
         let index_path = "target/.test-index";
-
-        // remove before running (may be around from failing test run)
-        fs::remove_file(index_path).unwrap_or(());
+        let _ = TestFile::new(index_path);
 
         {
             let mut index = Index::new(index_path, 1000u64, 10u64).unwrap();
@@ -416,13 +417,12 @@ mod tests {
             let e2 = index.read_entry(2).unwrap();
             assert_eq!(None, e2);
         }
-        fs::remove_file(index_path).unwrap();
     }
 
     #[test]
     pub fn log() {
         let log_path = "target/.test-log";
-        fs::remove_file(log_path).unwrap_or(());
+        let _ = TestFile::new(log_path);
         {
             let mut f = Log::new(log_path, 1024).unwrap();
 
@@ -437,7 +437,6 @@ mod tests {
 
             f.flush().unwrap();
         }
-        fs::remove_file(log_path).unwrap();
     }
 
     #[bench]
