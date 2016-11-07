@@ -3,9 +3,12 @@ use memmap::{Mmap, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use std::fs::{OpenOptions, File};
+use std::{u64, usize};
 
 /// Number of byes in each entry pair
 pub static INDEX_ENTRY_BYTES: usize = 8;
+pub static INDEX_FILE_NAME_LEN: usize = 20;
+pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
 /// An index is a file with pairs of relative offset to file position offset
 /// of messages at the relative offset messages. The index is Memory Mapped.
@@ -75,7 +78,7 @@ impl Index {
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
-            path_buf.set_extension("index");
+            path_buf.set_extension(INDEX_FILE_NAME_EXTENSION);
             path_buf
         };
 
@@ -104,7 +107,36 @@ impl Index {
         })
     }
 
-    pub fn can_write(&self) -> bool {
+    #[allow(dead_code)]
+    pub fn open<P>(index_path: P) -> io::Result<Index>
+        where P: AsRef<Path>
+    {
+        let index_file = try!(OpenOptions::new()
+            .read(true)
+            .write(false)
+            .append(false)
+            .open(&index_path));
+
+
+        let filename = index_path.as_ref().file_name().unwrap().to_str().unwrap();
+        let base_offset = match u64::from_str_radix(&filename[0..INDEX_FILE_NAME_LEN], 10) {
+            Ok(v) => v,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Index file name does not parse as u64")),
+        };
+
+
+        let mmap = try!(Mmap::open(&index_file, Protection::Read));
+
+        Ok(Index {
+            file: index_file,
+            mmap: mmap,
+            mode: AccessMode::Read,
+            next_write_pos: usize::max_value(),
+            base_offset: base_offset,
+        })
+    }
+
+    fn can_write(&self) -> bool {
         self.mode == AccessMode::ReadWrite && self.size() >= (self.next_write_pos + 8)
     }
 
@@ -180,9 +212,11 @@ impl Index {
 mod tests {
     use super::*;
     use super::super::testutil::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
-    fn index() {
+    pub fn index() {
         let path = TestDir::new();
         let mut index = Index::new(&path, 9u64, 1000usize).unwrap();
 
@@ -207,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn index_set_readonly() {
+    pub fn index_set_readonly() {
         let path = TestDir::new();
         let mut index = Index::new(&path, 10u64, 1000usize).unwrap();
 
@@ -232,4 +266,39 @@ mod tests {
         assert_eq!(None, e2);
     }
 
+    #[test]
+    pub fn open_index() {
+        let dir = TestDir::new();
+        // issue some writes
+        {
+            let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+            index.append(10, 0).unwrap();
+            index.append(11, 10).unwrap();
+            index.append(12, 20).unwrap();
+            index.append(13, 30).unwrap();
+            index.append(14, 40).unwrap();
+            index.set_readonly().unwrap();
+        }
+
+        // now open it
+        {
+            let mut index_path = PathBuf::new();
+            index_path.push(&dir);
+            index_path.push("00000000000000000010.index");
+
+            let meta = fs::metadata(&index_path).unwrap();
+            assert!(meta.is_file());
+
+            let index = Index::open(&index_path).unwrap();
+
+            for i in 0..5usize {
+                let e = index.read_entry(i).unwrap();
+                assert!(e.is_some());
+                assert_eq!(e.unwrap().relative_offset(), i as u32);
+                assert_eq!(e.unwrap().offset(), (i+10) as u64);
+                assert_eq!(e.unwrap().file_position(), (i*10) as u32);
+            }
+        }
+
+    }
 }
