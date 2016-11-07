@@ -14,14 +14,17 @@ extern crate test;
 #[cfg(test)]
 extern crate rand;
 
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::io;
-
 mod segment;
 mod index;
 #[cfg(test)]
 mod testutil;
+
+use std::path::{Path, PathBuf};
+use std::fs;
+use std::io;
+use segment::*;
+use index::*;
+
 
 /// Offset of an appended log segment.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
@@ -30,7 +33,8 @@ pub struct Offset(u64);
 #[derive(Debug)]
 pub enum AppendError {
     IoError(io::Error),
-    IndexAppendError,
+    NewIndexAppendError,
+    NewSegmentAppendError,
 }
 
 impl From<io::Error> for AppendError {
@@ -69,7 +73,7 @@ impl LogOptions {
     /// Bounds the size of an individual memory-mapped index file.
     #[inline]
     pub fn max_log_items(&mut self, items: usize) -> &mut LogOptions {
-        self.index_max_bytes = items * index::INDEX_ENTRY_BYTES;
+        self.index_max_bytes = items * INDEX_ENTRY_BYTES;
         self
     }
 }
@@ -89,8 +93,8 @@ impl LogOptions {
 /// it could contain file pointers to many index files. In addition, index files
 /// are memory-mapped for efficient read and write access.
 pub struct CommitLog {
-    active_segment: segment::Segment,
-    active_index: index::Index,
+    active_segment: Segment,
+    active_index: Index,
     options: LogOptions,
 }
 
@@ -100,8 +104,8 @@ impl CommitLog {
         fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
         info!("Opening log at path {:?}", &opts.log_dir.to_str());
-        let seg = try!(segment::Segment::new(&opts.log_dir, 0u64, opts.log_max_bytes));
-        let ind = try!(index::Index::new(&opts.log_dir, 0u64, opts.index_max_bytes));
+        let seg = try!(Segment::new(&opts.log_dir, 0u64, opts.log_max_bytes));
+        let ind = try!(Index::new(&opts.log_dir, 0u64, opts.index_max_bytes));
 
         Ok(CommitLog {
             active_segment: seg,
@@ -113,44 +117,52 @@ impl CommitLog {
     /// Appends a log entry to the commit log. The offset of the appended entry
     /// is the result of the comutation.
     pub fn append(&mut self, payload: &[u8]) -> Result<Offset, AppendError> {
-        let meta = match self.active_segment.append(payload) {
-            Ok(meta) => {
-                trace!("Successfully appended message {:?}", meta);
-                meta
-            }
-            Err(segment::SegmentAppendError::LogFull) => {
-                // close segment
-                try!(self.active_segment.flush_sync());
-                let next_offset = self.active_segment.next_offset();
-                info!("Closing segment at offset {}", next_offset);
-                self.active_segment = try!(segment::Segment::new(&self.options.log_dir,
-                                                                 next_offset,
-                                                                 self.options.log_max_bytes));
+        // first write to the current segment
+        let meta = try!(self.active_segment
+            .append(payload)
+            .or_else(|e| {
+                match e {
+                    // if the log is full, gracefully close the current segment
+                    // and create new one starting from the new offset
+                    SegmentAppendError::LogFull => {
+                        try!(self.active_segment.flush_sync());
+                        let next_offset = self.active_segment.next_offset();
+                        info!("Closing active segment at offset {}", next_offset);
+                        self.active_segment = try!(Segment::new(&self.options.log_dir,
+                                                                next_offset,
+                                                                self.options.log_max_bytes));
 
-                // try again
-                return self.append(payload);
-            }
-            Err(segment::SegmentAppendError::IoError(e)) => {
-                return Err(AppendError::IoError(e));
-            }
-        };
+                        // try again, giving up if we have to
+                        self.active_segment
+                            .append(payload)
+                            .map_err(|_| AppendError::NewIndexAppendError)
+                    }
+                    SegmentAppendError::IoError(e) => Err(AppendError::IoError(e)),
+                }
+            }));
 
         // write to the index
-        self.active_index.append(meta.offset(), meta.file_pos())
-            .or_else(|e| match e {
-                // if the index is full, close the current index and open a new index
-                index::IndexWriteError::IndexFull => {
-                    try!(self.active_index.set_readonly());
-                    self.active_index =
-                        try!(index::Index::new(&self.options.log_dir, meta.offset(), self.options.index_max_bytes));
+        try!(self.active_index
+            .append(meta.offset(), meta.file_pos())
+            .or_else(|e| {
+                match e {
+                    // if the index is full, close the current index and open a new index
+                    IndexWriteError::IndexFull => {
+                        try!(self.active_index.set_readonly());
+                        self.active_index = try!(Index::new(&self.options.log_dir,
+                                                            meta.offset(),
+                                                            self.options.index_max_bytes));
 
-                    // if the new index cannot append, we're out of luck
-                    self.active_index.append(meta.offset(), meta.file_pos())
-                        .map_err(|_| AppendError::IndexAppendError)
-                },
-                index::IndexWriteError::OffsetLessThanBase => unreachable!(),
-            })
-            .map(|_| Offset(meta.offset()))
+                        // if the new index cannot append, we're out of luck
+                        self.active_index
+                            .append(meta.offset(), meta.file_pos())
+                            .map_err(|_| AppendError::NewIndexAppendError)
+                    }
+                    IndexWriteError::OffsetLessThanBase => unreachable!(),
+                }
+            }));
+
+        Ok(Offset(meta.offset()))
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
