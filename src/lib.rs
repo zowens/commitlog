@@ -23,12 +23,12 @@ mod index;
 #[cfg(test)]
 mod testutil;
 
+/// Offset of an appended log segment.
 pub struct Offset(u64);
 
 #[derive(Debug)]
 pub enum AppendError {
     IoError(io::Error),
-    FileError,
 }
 
 impl From<io::Error> for AppendError {
@@ -37,6 +37,8 @@ impl From<io::Error> for AppendError {
     }
 }
 
+/// Commit log options allow customization of the commit
+/// log behavior.
 pub struct LogOptions {
     log_max_bytes: usize,
     index_max_bytes: usize,
@@ -52,12 +54,14 @@ impl Default for LogOptions {
 }
 
 impl LogOptions {
+    /// Bounds the size of a log segment to a number of bytes.
     #[inline]
     pub fn max_bytes_log(&mut self, bytes: usize) -> &mut LogOptions {
         self.log_max_bytes = bytes;
         self
     }
 
+    /// Bounds the size of an individual memory-mapped index file.
     #[inline]
     pub fn max_log_items(&mut self, items: usize) -> &mut LogOptions {
         self.index_max_bytes = items * index::INDEX_ENTRY_BYTES;
@@ -65,6 +69,20 @@ impl LogOptions {
     }
 }
 
+/// The commit log is an append-only data structure that can be used in a variety
+/// of use-cases, such as tracking sequences of events, logging transactions in a
+/// local database, or replicated state machines.
+///
+/// This implementation of the commit log data structure uses log segments
+/// that roll over at pre-defined maximum size boundaries. The messages appended
+/// to the log have a unique, monotonically incrasing offset that can be used as
+/// a pointer to a log entry.
+///
+/// The index of the commit log logically stores the offset to a position in the
+/// log segment corresponding. The index and segments are separated, in that a
+/// segment file does not necessarily correspond to one particular segment file,
+/// it could contain file pointers to many index files. In addition, index files
+/// are memory-mapped for efficient read and write access.
 pub struct CommitLog {
     active_segment: segment::Segment,
     active_index: index::Index,
@@ -105,6 +123,8 @@ impl CommitLog {
         }
     }
 
+    /// Appends a log entry to the commit log. The offset of the appended entry
+    /// is the result of the comutation.
     pub fn append(&mut self, payload: &[u8]) -> Result<Offset, AppendError> {
         let meta = match self.active_segment.append(payload) {
             Ok(meta) => {
