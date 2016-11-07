@@ -72,7 +72,7 @@ impl LogOptions {
 
     /// Bounds the size of an individual memory-mapped index file.
     #[inline]
-    pub fn max_log_items(&mut self, items: usize) -> &mut LogOptions {
+    pub fn max_index_items(&mut self, items: usize) -> &mut LogOptions {
         self.index_max_bytes = items * INDEX_ENTRY_BYTES;
         self
     }
@@ -176,6 +176,8 @@ impl CommitLog {
 mod tests {
     use super::*;
     use super::testutil::*;
+    use std::fs;
+    use std::collections::HashSet;
 
     #[test]
     pub fn append() {
@@ -186,5 +188,65 @@ mod tests {
         assert_eq!(log.append(b"foobarbaz").unwrap(), Offset(2));
         assert_eq!(log.append(b"bing").unwrap(), Offset(3));
         log.flush().unwrap();
+    }
+
+    #[test]
+    pub fn append_new_segment() {
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.max_bytes_log(52);
+
+        {
+            let mut log = CommitLog::new(opts).unwrap();
+            // first 2 entries fit (both 26 bytes with encoding)
+            log.append(b"0123456789").unwrap();
+            log.append(b"0123456789").unwrap();
+
+            // this one should roll the log
+            log.append(b"0123456789").unwrap();
+            log.flush().unwrap();
+        }
+
+        let files = fs::read_dir(&dir).unwrap()
+            .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
+            .collect::<HashSet<String>>();
+
+        let expected = ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.log"]
+            .iter()
+            .cloned()
+            .map(|s| s.to_string())
+            .collect::<HashSet<String>>();
+
+        assert_eq!(files.intersection(&expected).count(), 3);
+    }
+
+    #[test]
+    pub fn append_new_index() {
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.max_index_items(2);
+
+        {
+            let mut log = CommitLog::new(opts).unwrap();
+            // first 2 entries fit
+            log.append(b"0123456789").unwrap();
+            log.append(b"0123456789").unwrap();
+
+            // this one should roll the index, but not the segment
+            log.append(b"0123456789").unwrap();
+            log.flush().unwrap();
+        }
+
+        let files = fs::read_dir(&dir).unwrap()
+            .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
+            .collect::<HashSet<String>>();
+
+        let expected = ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.index"]
+            .iter()
+            .cloned()
+            .map(|s| s.to_string())
+            .collect::<HashSet<String>>();
+
+        assert_eq!(files.intersection(&expected).count(), 3);
     }
 }
