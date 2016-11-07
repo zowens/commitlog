@@ -24,11 +24,13 @@ mod index;
 mod testutil;
 
 /// Offset of an appended log segment.
+#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub struct Offset(u64);
 
 #[derive(Debug)]
 pub enum AppendError {
     IoError(io::Error),
+    IndexAppendError,
 }
 
 impl From<io::Error> for AppendError {
@@ -39,21 +41,24 @@ impl From<io::Error> for AppendError {
 
 /// Commit log options allow customization of the commit
 /// log behavior.
+#[derive(Clone, Debug)]
 pub struct LogOptions {
+    log_dir: PathBuf,
     log_max_bytes: usize,
     index_max_bytes: usize,
 }
 
-impl Default for LogOptions {
-    fn default() -> LogOptions {
+impl LogOptions {
+    pub fn new<P>(log_dir: P) -> LogOptions
+        where P: AsRef<Path>
+    {
         LogOptions {
+            log_dir: log_dir.as_ref().to_owned(),
             log_max_bytes: 100 * 1024 * 1024,
             index_max_bytes: 800_000,
         }
     }
-}
 
-impl LogOptions {
     /// Bounds the size of a log segment to a number of bytes.
     #[inline]
     pub fn max_bytes_log(&mut self, bytes: usize) -> &mut LogOptions {
@@ -86,41 +91,23 @@ impl LogOptions {
 pub struct CommitLog {
     active_segment: segment::Segment,
     active_index: index::Index,
-    log_dir: PathBuf,
     options: LogOptions,
 }
 
 impl CommitLog {
-    pub fn new<P>(log_dir: P, opts: LogOptions) -> io::Result<CommitLog>
-        where P: AsRef<Path>
-    {
+    pub fn new(opts: LogOptions) -> io::Result<CommitLog> {
         // TODO: figure out what's already been written to
-        fs::create_dir_all(&log_dir).unwrap_or(());
+        fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
-        let owned_path = log_dir.as_ref().to_owned();
-        info!("Opening log at path {:?}", owned_path.to_str());
-        let seg = try!(segment::Segment::new(&owned_path, 0u64, opts.log_max_bytes));
-        let ind = try!(index::Index::new(&owned_path, 0u64, opts.index_max_bytes));
+        info!("Opening log at path {:?}", &opts.log_dir.to_str());
+        let seg = try!(segment::Segment::new(&opts.log_dir, 0u64, opts.log_max_bytes));
+        let ind = try!(index::Index::new(&opts.log_dir, 0u64, opts.index_max_bytes));
 
         Ok(CommitLog {
             active_segment: seg,
             active_index: ind,
-            log_dir: owned_path,
             options: opts,
         })
-    }
-
-    fn index_append(&mut self, offset: u64, pos: u32) -> Result<(), AppendError> {
-        match self.active_index.append(offset, pos) {
-            Ok(()) => Ok(()),
-            Err(index::IndexWriteError::IndexFull) => {
-                try!(self.active_index.set_readonly());
-                self.active_index =
-                    try!(index::Index::new(&self.log_dir, offset, self.options.index_max_bytes));
-                self.index_append(offset, pos)
-            }
-            Err(index::IndexWriteError::OffsetLessThanBase) => unreachable!(),
-        }
     }
 
     /// Appends a log entry to the commit log. The offset of the appended entry
@@ -136,7 +123,7 @@ impl CommitLog {
                 try!(self.active_segment.flush_sync());
                 let next_offset = self.active_segment.next_offset();
                 info!("Closing segment at offset {}", next_offset);
-                self.active_segment = try!(segment::Segment::new(&self.log_dir,
+                self.active_segment = try!(segment::Segment::new(&self.options.log_dir,
                                                                  next_offset,
                                                                  self.options.log_max_bytes));
 
@@ -147,12 +134,45 @@ impl CommitLog {
                 return Err(AppendError::IoError(e));
             }
         };
-        try!(self.index_append(meta.offset(), meta.file_pos()));
-        Ok(Offset(meta.offset()))
+
+        // write to the index
+        self.active_index.append(meta.offset(), meta.file_pos())
+            .or_else(|e| match e {
+                // if the index is full, close the current index and open a new index
+                index::IndexWriteError::IndexFull => {
+                    try!(self.active_index.set_readonly());
+                    self.active_index =
+                        try!(index::Index::new(&self.options.log_dir, meta.offset(), self.options.index_max_bytes));
+
+                    // if the new index cannot append, we're out of luck
+                    self.active_index.append(meta.offset(), meta.file_pos())
+                        .map_err(|_| AppendError::IndexAppendError)
+                },
+                index::IndexWriteError::OffsetLessThanBase => unreachable!(),
+            })
+            .map(|_| Offset(meta.offset()))
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
         try!(self.active_segment.flush_sync());
         self.active_index.flush_sync()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::testutil::*;
+
+    #[test]
+    pub fn append() {
+        let dir = TestDir::new();
+        let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
+        assert_eq!(log.append(b"123456").unwrap(), Offset(0));
+        assert_eq!(log.append(b"abcdefg").unwrap(), Offset(1));
+        assert_eq!(log.append(b"foobarbaz").unwrap(), Offset(2));
+        assert_eq!(log.append(b"bing").unwrap(), Offset(3));
+        log.flush().unwrap();
     }
 }
