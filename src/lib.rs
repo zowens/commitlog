@@ -19,6 +19,7 @@ mod index;
 #[cfg(test)]
 mod testutil;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io;

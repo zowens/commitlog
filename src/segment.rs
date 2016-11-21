@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
 use crc::crc32::checksum_ieee;
 use byteorder::{BigEndian, ByteOrder};
-use std::io::{self, Write, Read, Seek, SeekFrom};
+use std::io::{self, Write, Read, BufReader, Seek, SeekFrom};
 
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
 pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
@@ -176,6 +176,11 @@ impl LogEntryMetadata {
     }
 }
 
+pub enum ReadLimit {
+    Bytes(usize),
+    Messages(usize),
+}
+
 
 impl Segment {
     pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize) -> io::Result<Segment>
@@ -190,12 +195,12 @@ impl Segment {
             path_buf
         };
 
-        let f = try!(OpenOptions::new()
+        let f = OpenOptions::new()
             .write(true)
             .read(true)
             .create_new(true)
             .append(true)
-            .open(&log_path));
+            .open(&log_path)?;
 
         Ok(Segment {
             file: f,
@@ -215,11 +220,11 @@ impl Segment {
     pub fn open<P>(seg_path: P) -> io::Result<Segment>
         where P: AsRef<Path>
     {
-        let seg_file = try!(OpenOptions::new()
+        let seg_file = OpenOptions::new()
             .read(true)
             .write(false)
             .append(false)
-            .open(&seg_path));
+            .open(&seg_path)?;
 
 
         let filename = seg_path.as_ref().file_name().unwrap().to_str().unwrap();
@@ -270,11 +275,11 @@ impl Segment {
         // move cursor back to write position if we have moved the
         // cursor due to a read
         if self.has_read {
-            try!(self.file.seek(SeekFrom::Start(write_pos as u64)));
+            self.file.seek(SeekFrom::Start(write_pos as u64))?;
             self.has_read = false;
         }
 
-        try!(self.file.write_all(msg.bytes()));
+        self.file.write_all(msg.bytes())?;
         self.mode = SegmentMode::ReadWrite {
             write_pos: write_pos + msg.bytes().len(),
             next_offset: off + 1,
@@ -291,12 +296,47 @@ impl Segment {
         self.file.flush()
     }
 
+    fn seek(&mut self, file_pos: u32) -> io::Result<()> {
+        self.has_read = true;
+        self.file.seek(SeekFrom::Start(file_pos as u64))?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn read_at_pos(&mut self, file_pos: u32) -> Result<Message, MessageError> {
-        self.has_read = true;
-        try!(self.file.seek(SeekFrom::Start(file_pos as u64)));
-        let msg = try!(Message::read(&mut self.file));
+        self.seek(file_pos)?;
+        let mut buf_reader = BufReader::new(&mut self.file);
+        let msg = Message::read(&mut buf_reader)?;
         Ok(msg)
+    }
+
+    #[allow(dead_code)]
+    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<Vec<Message>, MessageError> {
+        self.seek(file_pos)?;
+
+        let mut buf_reader = match limit {
+            ReadLimit::Bytes(n) => BufReader::with_capacity(n, &mut self.file),
+            _ => BufReader::new(&mut self.file),
+        };
+
+        let mut msgs = Vec::new();
+
+        loop {
+            match Message::read(&mut buf_reader) {
+                Ok(msg) => {
+                    msgs.push(msg);
+
+                    match limit {
+                        ReadLimit::Messages(l) if l <= msgs.len() => return Ok(msgs),
+                        _ => {},
+                    }
+                },
+                // EOF counts as an end to the stream, thus we're done fetching messages
+                Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof =>
+                    return Ok(msgs),
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
@@ -412,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    pub fn log_read() {
+    pub fn log_read_at() {
         let log_dir = TestDir::new();
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
@@ -446,6 +486,48 @@ mod tests {
         assert!(non_exist_res.is_err());
     }
 
+    #[test]
+    pub fn log_read() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        let m0 = f.append(b"0123456789").unwrap();
+        f.append(b"aaaaaaaaaa").unwrap();
+        f.append(b"abc").unwrap();
+
+        let msgs = f.read(m0.file_pos(), ReadLimit::Messages(10)).unwrap();
+        assert_eq!(3, msgs.len());
+        assert_eq!(0, msgs[0].offset());
+        assert_eq!(1, msgs[1].offset());
+        assert_eq!(2, msgs[2].offset());
+    }
+
+    #[test]
+    pub fn log_read_with_msg_limit() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        let m0 = f.append(b"0123456789").unwrap();
+        f.append(b"aaaaaaaaaa").unwrap();
+        f.append(b"abc").unwrap();
+
+        let msgs = f.read(m0.file_pos(), ReadLimit::Messages(2)).unwrap();
+        assert_eq!(2, msgs.len());
+    }
+
+    #[test]
+    pub fn log_read_with_size_limit() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        let m0 = f.append(b"0123456789").unwrap();
+        let m1 = f.append(b"aaaaaaaaaa").unwrap();
+        f.append(b"abc").unwrap();
+
+        // byte max contains message 0, but not the entirety of message 1
+        let msgs = f.read(m0.file_pos(), ReadLimit::Bytes((m1.file_pos() + 1) as usize)).unwrap();
+        assert_eq!(1, msgs.len());
+    }
 
     #[bench]
     fn bench_segment_append(b: &mut Bencher) {
