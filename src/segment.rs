@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
 use crc::crc32::checksum_ieee;
 use byteorder::{BigEndian, ByteOrder};
-use std::io::{self, Write, Read};
+use std::io::{self, Write, Read, Seek, SeekFrom};
 
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
 pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
@@ -138,6 +138,7 @@ pub struct Segment {
     file: File,
 
     mode: SegmentMode,
+    has_read: bool,
 
     /// Base offset of the log
     base_offset: u64,
@@ -204,11 +205,13 @@ impl Segment {
                 next_offset: base_offset,
                 max_bytes: max_bytes,
             },
+            has_read: false,
 
             base_offset: base_offset,
         })
     }
 
+    #[allow(dead_code)]
     pub fn open<P>(seg_path: P) -> io::Result<Segment>
         where P: AsRef<Path>
     {
@@ -232,6 +235,7 @@ impl Segment {
         Ok(Segment {
             file: seg_file,
             mode: SegmentMode::Read,
+            has_read: false,
             base_offset: base_offset,
         })
     }
@@ -239,7 +243,7 @@ impl Segment {
     // TODO: doesn't make sense
     pub fn next_offset(&self) -> u64 {
         match self.mode {
-            SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => next_offset,
+            SegmentMode::ReadWrite { next_offset, .. } => next_offset,
             _ => 0
         }
     }
@@ -263,6 +267,13 @@ impl Segment {
             return Err(SegmentAppendError::LogFull);
         }
 
+        // move cursor back to write position if we have moved the
+        // cursor due to a read
+        if self.has_read {
+            try!(self.file.seek(SeekFrom::Start(write_pos as u64)));
+            self.has_read = false;
+        }
+
         try!(self.file.write_all(msg.bytes()));
         self.mode = SegmentMode::ReadWrite {
             write_pos: write_pos + msg.bytes().len(),
@@ -280,9 +291,13 @@ impl Segment {
         self.file.flush()
     }
 
-    /*pub fn read_at_pos(&mut self, pos: u32) -> Result<Message, MessageError> {
-
-    }*/
+    #[allow(dead_code)]
+    pub fn read_at_pos(&mut self, file_pos: u32) -> Result<Message, MessageError> {
+        self.has_read = true;
+        try!(self.file.seek(SeekFrom::Start(file_pos as u64)));
+        let msg = try!(Message::read(&mut self.file));
+        Ok(msg)
+    }
 }
 
 
@@ -292,6 +307,7 @@ mod tests {
     use test::Bencher;
     use super::super::testutil::*;
     use std::io;
+    use std::path::PathBuf;
 
     #[test]
     fn message_construction() {
@@ -368,6 +384,68 @@ mod tests {
 
         f.flush_sync().unwrap();
     }
+
+    #[test]
+    pub fn log_open() {
+        let log_dir = TestDir::new();
+
+        {
+            let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+            f.append(b"12345").unwrap();
+            f.append(b"66666").unwrap();
+            f.flush_sync().unwrap();
+        }
+
+        // open it
+        {
+            let mut path_buf = PathBuf::new();
+            path_buf.push(&log_dir);
+            path_buf.push(format!("{:020}", 0));
+            path_buf.set_extension(SEGMENT_FILE_NAME_EXTENSION);
+
+            let res = Segment::open(&path_buf);
+            assert!(res.is_ok(), "Err {:?}", res.err());
+
+            let f = res.unwrap();
+            assert_eq!(0, f.starting_offset());
+        }
+    }
+
+    #[test]
+    pub fn log_read() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        let m0 = f.append(b"0123456789").unwrap();
+        let m1 = f.append(b"aaaaaaaaaa").unwrap();
+        let m2 = f.append(b"abc").unwrap();
+
+        let m0read = f.read_at_pos(m0.file_pos());
+        assert!(m0read.is_ok(), "Err reading message 0: {:?}", m0read.err());
+        assert_eq!(b"0123456789", m0read.as_ref().unwrap().payload());
+        assert_eq!(0, m0read.as_ref().unwrap().offset());
+
+        let m3 = f.append(b"MIDDLE WRITE").unwrap();
+
+        let m1read = f.read_at_pos(m1.file_pos());
+        assert!(m0read.is_ok(), "Err reading message 1: {:?}", m1read.err());
+        assert_eq!(b"aaaaaaaaaa", m1read.as_ref().unwrap().payload());
+        assert_eq!(1, m1read.as_ref().unwrap().offset());
+
+        let m2read = f.read_at_pos(m2.file_pos());
+        assert!(m2read.is_ok(), "Err reading message 2: {:?}", m2read.err());
+        assert_eq!(b"abc", m2read.as_ref().unwrap().payload());
+        assert_eq!(2, m2read.as_ref().unwrap().offset());
+
+        let m3read = f.read_at_pos(m3.file_pos());
+        assert!(m2read.is_ok(), "Err reading message 3: {:?}", m3read.err());
+        assert_eq!(b"MIDDLE WRITE", m3read.as_ref().unwrap().payload());
+        assert_eq!(3, m3read.as_ref().unwrap().offset());
+
+        let non_exist_res = f.read_at_pos(m3.file_pos() * 2);
+        assert!(non_exist_res.is_err());
+    }
+
 
     #[bench]
     fn bench_segment_append(b: &mut Bencher) {
