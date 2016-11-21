@@ -178,11 +178,18 @@ impl Index {
     }
 
     #[inline]
+    pub fn starting_offset(&self) -> u64 {
+        self.base_offset
+    }
+
+    #[inline]
     pub fn size(&self) -> usize {
         self.mmap.len()
     }
 
     pub fn append(&mut self, abs_offset: u64, position: u32) -> Result<(), IndexWriteError> {
+        trace!("Index append {} => {}", abs_offset, position);
+
         assert!(abs_offset >= self.base_offset);
 
         if !self.can_write() {
@@ -244,9 +251,10 @@ impl Index {
         }
     }
 
-    pub fn find(&self, offset: u64) -> Result<Option<IndexEntry>, IndexReadError> {
+    pub fn find(&self, offset: u64) -> Option<IndexEntry> {
         if offset < self.base_offset {
-            return Err(IndexReadError::OutOfBounds);
+            // pathological case... not worth exposing Result
+            return None;
         }
 
         let rel_offset = (offset - self.base_offset) as u32;
@@ -257,13 +265,13 @@ impl Index {
                                 |_, v| v.cmp(&rel_offset)) {
                 Ok(i) => {
                     let p = (i * 8) + 4;
-                    Ok(Some(IndexEntry {
+                    Some(IndexEntry {
                         rel_offset: rel_offset,
                         base_offset: self.base_offset,
                         file_pos: BigEndian::read_u32(&mem_slice[p..p + 4]),
-                    }))
+                    })
                 }
-                _ => Ok(None),
+                _ => None,
             }
         }
 
@@ -276,7 +284,6 @@ mod tests {
     use super::super::testutil::*;
     use std::fs;
     use std::path::PathBuf;
-    use std::cmp::Ordering;
 
     #[test]
     pub fn index() {
@@ -377,7 +384,7 @@ mod tests {
         index.append(18, 7).unwrap();
         index.append(20, 8).unwrap();
 
-        let res = index.find(16).unwrap().unwrap();
+        let res = index.find(16).unwrap();
         assert_eq!(6, res.relative_offset());
         assert_eq!(16, res.offset());
         assert_eq!(5, res.file_position());
@@ -397,8 +404,7 @@ mod tests {
         index.append(20, 8).unwrap();
 
         let res = index.find(14);
-        assert!(res.is_ok());
-        assert!(res.unwrap().is_none());
+        assert!(res.is_none());
     }
 
     #[test]
@@ -415,7 +421,6 @@ mod tests {
         index.append(20, 8).unwrap();
 
         let res = index.find(2);
-        assert!(res.is_err());
-        assert_eq!(IndexReadError::OutOfBounds, res.err().unwrap());
+        assert!(res.is_none());
     }
 }

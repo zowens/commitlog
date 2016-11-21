@@ -1,5 +1,6 @@
-#![feature(test)]
-// This is silly...
+#![feature(test, btree_range, collections_bound)]
+
+// (for test) This is silly...
 #![allow(unused_features)]
 
 #[macro_use]
@@ -19,28 +20,74 @@ mod index;
 #[cfg(test)]
 mod testutil;
 
-use std::collections::BTreeMap;
+use std::collections::{Bound, BTreeMap};
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io;
-use segment::*;
+use std::mem::swap;
+use segment::{Segment, SegmentAppendError};
 use index::*;
+
+pub use segment::ReadLimit;
+pub use segment::Message;
 
 
 /// Offset of an appended log segment.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
-pub struct Offset(u64);
+pub struct Offset(pub u64);
 
+/// Error enum for commit log Append operation.
 #[derive(Debug)]
 pub enum AppendError {
-    IoError(io::Error),
-    NewIndexAppendError,
-    NewSegmentAppendError,
+    /// The underlying file operations failed during the append attempt.
+    Io(io::Error),
+    /// A new index was created, but was unable to receive writes
+    /// during the append operation. This could point to exhaustion
+    /// of machine resources or other I/O issue.
+    FreshIndexNotWritable,
+    /// A new segment was created, but was unable to receive writes
+    /// during the append operation. This could point to exhaustion
+    /// of machine resources or other I/O issue.
+    FreshSegmentNotWritable,
 }
 
 impl From<io::Error> for AppendError {
     fn from(e: io::Error) -> AppendError {
-        AppendError::IoError(e)
+        AppendError::Io(e)
+    }
+}
+
+
+/// Starting location of a read
+#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
+pub enum ReadPosition {
+    /// Start reading from the initial offset
+    Beginning,
+    /// Start reading from a specified offset
+    Offset(Offset),
+
+    // TODO: particular pointer
+}
+
+/// Error enum for commit log read operation.
+#[derive(Debug)]
+pub enum ReadError {
+    Io(io::Error),
+    CorruptLog,
+}
+
+impl From<io::Error> for ReadError {
+    fn from(e: io::Error) -> ReadError {
+        ReadError::Io(e)
+    }
+}
+
+impl From<segment::MessageError> for ReadError {
+    fn from(e: segment::MessageError) -> ReadError {
+        match e {
+            segment::MessageError::IoError(e) => ReadError::Io(e),
+            segment::MessageError::InvalidCRC => ReadError::CorruptLog,
+        }
     }
 }
 
@@ -91,9 +138,12 @@ impl LogOptions {
 /// The index of the commit log logically stores the offset to a position in the
 /// log segment corresponding. The index and segments are separated, in that a
 /// segment file does not necessarily correspond to one particular segment file,
-/// it could contain file pointers to many index files. In addition, index files
+/// it could contain file pointers to many segment files. In addition, index files
 /// are memory-mapped for efficient read and write access.
 pub struct CommitLog {
+    closed_segments: BTreeMap<u64, Segment>,
+    closed_indexes: BTreeMap<u64, Index>,
+
     active_segment: Segment,
     active_index: Index,
     options: LogOptions,
@@ -109,14 +159,16 @@ impl CommitLog {
         let ind = try!(Index::new(&opts.log_dir, 0u64, opts.index_max_bytes));
 
         Ok(CommitLog {
+            closed_segments: BTreeMap::new(),
+            closed_indexes: BTreeMap::new(),
+
             active_segment: seg,
             active_index: ind,
             options: opts,
         })
     }
 
-    /// Appends a log entry to the commit log. The offset of the appended entry
-    /// is the result of the comutation.
+    /// Appends a log entry to the commit log, returning the offset of the appended entry.
     pub fn append(&mut self, payload: &[u8]) -> Result<Offset, AppendError> {
         // first write to the current segment
         let meta = try!(self.active_segment
@@ -128,17 +180,27 @@ impl CommitLog {
                     SegmentAppendError::LogFull => {
                         try!(self.active_segment.flush_sync());
                         let next_offset = self.active_segment.next_offset();
-                        info!("Closing active segment at offset {}", next_offset);
-                        self.active_segment = try!(Segment::new(&self.options.log_dir,
-                                                                next_offset,
-                                                                self.options.log_max_bytes));
+
+                        info!("Starting new segment at offset {}", next_offset);
+
+                        let mut seg = try!(Segment::new(&self.options.log_dir,
+                                                        next_offset,
+                                                        self.options.log_max_bytes));
+
+
+                        // set the active segment to the new segment,
+                        // swap in order to insert the segment into
+                        // the closed segments tree
+                        swap(&mut seg, &mut self.active_segment);
+                        self.closed_segments.insert(seg.starting_offset(), seg);
+
 
                         // try again, giving up if we have to
                         self.active_segment
                             .append(payload)
-                            .map_err(|_| AppendError::NewIndexAppendError)
+                            .map_err(|_| AppendError::FreshSegmentNotWritable)
                     }
-                    SegmentAppendError::IoError(e) => Err(AppendError::IoError(e)),
+                    SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
                 }
             }));
 
@@ -149,21 +211,80 @@ impl CommitLog {
                 match e {
                     // if the index is full, close the current index and open a new index
                     IndexWriteError::IndexFull => {
+                        info!("Starting new index at offset {}", meta.offset());
+
                         try!(self.active_index.set_readonly());
-                        self.active_index = try!(Index::new(&self.options.log_dir,
-                                                            meta.offset(),
-                                                            self.options.index_max_bytes));
+                        let mut ind = try!(Index::new(&self.options.log_dir,
+                                                      meta.offset(),
+                                                      self.options.index_max_bytes));
+
+                        // set the active index to the new index,
+                        // swap in order to insert the index into
+                        // the closed index tree
+                        swap(&mut ind, &mut self.active_index);
+                        self.closed_indexes.insert(ind.starting_offset(), ind);
 
                         // if the new index cannot append, we're out of luck
                         self.active_index
                             .append(meta.offset(), meta.file_pos())
-                            .map_err(|_| AppendError::NewIndexAppendError)
+                            .map_err(|_| AppendError::FreshIndexNotWritable)
                     }
                     IndexWriteError::OffsetLessThanBase => unreachable!(),
                 }
             }));
 
         Ok(Offset(meta.offset()))
+    }
+
+    pub fn read(&mut self, start: ReadPosition, limit: ReadLimit) -> Result<Vec<Message>, ReadError> {
+        let start_off = match start {
+            ReadPosition::Beginning => 0,
+            ReadPosition::Offset(Offset(v)) => v,
+        };
+
+        // find the appropriate index
+        // TODO: change index find to be >= to offset
+        let active_start_off = self.active_index.starting_offset();
+
+        // find the file position from the index
+        let index_entry_res = if start_off >= active_start_off {
+            info!("using active index");
+            self.active_index.find(start_off)
+        } else {
+            info!("using old index");
+            let found_index = self.closed_indexes
+                .range(Bound::Unbounded, Bound::Included(&start_off))
+                .next_back();
+            found_index.and_then(|(_, i)| i.find(start_off))
+        };
+
+        let file_pos = match index_entry_res {
+            Some(e) => e.file_position(),
+            None => {
+                info!("No index entry found for {}", start_off);
+                return Ok(Vec::with_capacity(0));
+            }
+        };
+
+        // find the correct segment
+        let active_seg_start_off = self.active_segment.starting_offset();
+        if start_off >= active_seg_start_off {
+            info!("Reading from active index at file pos {}", file_pos);
+            Ok(self.active_segment.read(file_pos, limit)?)
+        } else {
+            let mut r = self.closed_segments
+                .range_mut(Bound::Unbounded, Bound::Included(&start_off));
+            match r.next_back() {
+                Some((_, ref mut s)) => {
+                    info!("Reading from old index at file pos {}", file_pos);
+                    Ok(s.read(file_pos, limit)?)
+                },
+                _ => {
+                    info!("No index found for off {}", start_off);
+                    Ok(Vec::with_capacity(0))
+                }
+            }
+        }
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
@@ -179,6 +300,7 @@ mod tests {
     use super::testutil::*;
     use std::fs;
     use std::collections::HashSet;
+    use env_logger;
 
     #[test]
     pub fn append() {
@@ -254,5 +376,43 @@ mod tests {
             .collect::<HashSet<String>>();
 
         assert_eq!(files.intersection(&expected).count(), 3);
+    }
+
+    #[test]
+    pub fn read_entries() {
+        env_logger::init().unwrap();
+
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.max_index_items(20);
+        opts.max_bytes_log(1000);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        for i in 0..100 {
+            let s = format!("some data {}", i);
+            log.append(s.as_bytes()).unwrap();
+        }
+        log.flush().unwrap();
+
+        {
+            let active_index_read = log.read(ReadPosition::Offset(Offset(82)), ReadLimit::Messages(5)).unwrap();
+            assert_eq!(5, active_index_read.len());
+            assert_eq!(vec![82, 83, 84, 85, 86], active_index_read.into_iter().map(|v| v.offset()).collect::<Vec<_>>());
+        }
+
+        {
+            let old_index_read = log.read(ReadPosition::Offset(Offset(5)), ReadLimit::Messages(5)).unwrap();
+            assert_eq!(5, old_index_read.len());
+            assert_eq!(vec![5, 6, 7, 8, 9], old_index_read.into_iter().map(|v| v.offset()).collect::<Vec<_>>());
+        }
+
+        // read at the boundary (not going to get full message limit)
+        {
+            // log rolls at offset 36
+            let boundary_read = log.read(ReadPosition::Offset(Offset(33)), ReadLimit::Messages(5)).unwrap();
+            assert_eq!(3, boundary_read.len());
+            assert_eq!(vec![33, 34, 35], boundary_read.into_iter().map(|v| v.offset()).collect::<Vec<_>>());
+        }
+
     }
 }
