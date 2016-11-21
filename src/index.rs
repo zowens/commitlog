@@ -114,21 +114,20 @@ impl Index {
             path_buf
         };
 
-        let index_file = try!(OpenOptions::new()
-            .read(true)
+        let index_file = OpenOptions::new().read(true)
             .write(true)
             .append(true)
             .create_new(true)
-            .open(&index_path));
+            .open(&index_path)?;
 
         // read the metadata and truncate
-        let meta = try!(index_file.metadata());
+        let meta = index_file.metadata()?;
         let len = meta.len();
         if len == 0 {
-            try!(index_file.set_len(file_bytes as u64));
+            index_file.set_len(file_bytes as u64)?;
         }
 
-        let mmap = try!(Mmap::open(&index_file, Protection::ReadWrite));
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?;
 
         Ok(Index {
             file: index_file,
@@ -143,11 +142,10 @@ impl Index {
     pub fn open<P>(index_path: P) -> io::Result<Index>
         where P: AsRef<Path>
     {
-        let index_file = try!(OpenOptions::new()
-            .read(true)
+        let index_file = OpenOptions::new().read(true)
             .write(false)
             .append(false)
-            .open(&index_path));
+            .open(&index_path)?;
 
 
         let filename = index_path.as_ref().file_name().unwrap().to_str().unwrap();
@@ -160,7 +158,7 @@ impl Index {
         };
 
 
-        let mmap = try!(Mmap::open(&index_file, Protection::Read));
+        let mmap = Mmap::open(&index_file, Protection::Read)?;
         let next_write_pos = mmap.len();
         // TODO: determine if there are empty holes in the file
 
@@ -224,7 +222,7 @@ impl Index {
     }
 
     pub fn flush_sync(&mut self) -> io::Result<()> {
-        try!(self.mmap.flush());
+        self.mmap.flush()?;
         self.file.flush()
     }
 
