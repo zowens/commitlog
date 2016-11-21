@@ -4,6 +4,9 @@ use crc::crc32::checksum_ieee;
 use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write, Read};
 
+pub static SEGMENT_FILE_NAME_LEN: usize = 20;
+pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
+
 #[derive(Debug)]
 pub enum MessageError {
     IoError(io::Error),
@@ -113,19 +116,29 @@ impl Message {
     }
 }
 
+enum SegmentMode {
+    ReadWrite {
+        /// current file position for the write
+        write_pos: usize,
+
+        /// Next offset of the log
+        next_offset: u64,
+
+        /// Maximum number of bytes permitted to be appended to the log
+        max_bytes: usize,
+    },
+    Read,
+}
+
 
 /// A segment is a portion of the commit log. Segments are append-only logs written
 /// until the maximum size is reached.
 pub struct Segment {
     /// File descriptor
     file: File,
-    /// Maximum number of bytes permitted to be appended to the log
-    max_bytes: usize,
-    /// current file position for the write
-    pos: usize,
 
-    /// Next offset of the log
-    next_offset: u64,
+    mode: SegmentMode,
+
     /// Base offset of the log
     base_offset: u64,
 }
@@ -164,8 +177,6 @@ impl LogEntryMetadata {
 
 
 impl Segment {
-    // TODO: open variant for reading
-
     pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize) -> io::Result<Segment>
         where P: AsRef<Path>
     {
@@ -174,7 +185,7 @@ impl Segment {
             let mut path_buf = PathBuf::new();
             path_buf.push(&log_dir);
             path_buf.push(format!("{:020}", base_offset));
-            path_buf.set_extension("log");
+            path_buf.set_extension(SEGMENT_FILE_NAME_EXTENSION);
             path_buf
         };
 
@@ -187,17 +198,50 @@ impl Segment {
 
         Ok(Segment {
             file: f,
-            max_bytes: max_bytes,
-            pos: 0,
 
-            next_offset: base_offset,
+            mode: SegmentMode::ReadWrite {
+                write_pos: 0,
+                next_offset: base_offset,
+                max_bytes: max_bytes,
+            },
+
             base_offset: base_offset,
         })
     }
 
-    #[inline]
+    pub fn open<P>(seg_path: P) -> io::Result<Segment>
+        where P: AsRef<Path>
+    {
+        let seg_file = try!(OpenOptions::new()
+            .read(true)
+            .write(false)
+            .append(false)
+            .open(&seg_path));
+
+
+        let filename = seg_path.as_ref().file_name().unwrap().to_str().unwrap();
+        let base_offset = match u64::from_str_radix(&filename[0..SEGMENT_FILE_NAME_LEN], 10) {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                          "Segment file name does not parse as u64"))
+            }
+        };
+
+
+        Ok(Segment {
+            file: seg_file,
+            mode: SegmentMode::Read,
+            base_offset: base_offset,
+        })
+    }
+
+    // TODO: doesn't make sense
     pub fn next_offset(&self) -> u64 {
-        self.next_offset
+        match self.mode {
+            SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => next_offset,
+            _ => 0
+        }
     }
 
     #[inline]
@@ -207,19 +251,24 @@ impl Segment {
     }
 
     pub fn append(&mut self, payload: &[u8]) -> Result<LogEntryMetadata, SegmentAppendError> {
-        let off = self.next_offset;
+        let (write_pos, off, max_bytes) = match self.mode {
+            SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } =>
+                (write_pos, next_offset, max_bytes),
+            _ => return Err(SegmentAppendError::LogFull),
+        };
+
         let msg = Message::new(payload, off);
         // ensure we have the capacity
-        if msg.bytes().len() + self.pos > self.max_bytes {
+        if msg.bytes().len() + write_pos > max_bytes {
             return Err(SegmentAppendError::LogFull);
         }
 
         try!(self.file.write_all(msg.bytes()));
-        let write_pos = self.pos;
-
-        self.pos += msg.bytes().len();
-        self.next_offset += 1;
-
+        self.mode = SegmentMode::ReadWrite {
+            write_pos: write_pos + msg.bytes().len(),
+            next_offset: off + 1,
+            max_bytes: max_bytes,
+        };
         Ok(LogEntryMetadata {
             offset: off,
             file_pos: write_pos as u32,
@@ -230,6 +279,10 @@ impl Segment {
     pub fn flush_sync(&mut self) -> io::Result<()> {
         self.file.flush()
     }
+
+    /*pub fn read_at_pos(&mut self, pos: u32) -> Result<Message, MessageError> {
+
+    }*/
 }
 
 
