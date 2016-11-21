@@ -7,7 +7,7 @@ use std::io::{self, Write, Read};
 #[derive(Debug)]
 pub enum MessageError {
     IoError(io::Error),
-    InvalidCRC
+    InvalidCRC,
 }
 
 impl From<io::Error> for MessageError {
@@ -21,7 +21,9 @@ macro_rules! read_n {
 
         match $reader.read(&mut $buf) {
             Ok(s) if s == $size => (),
-            Ok(_) => return Err(MessageError::IoError(io::Error::new(io::ErrorKind::UnexpectedEof, $err_msg))),
+            Ok(_) => return Err(
+                MessageError::IoError(
+                    io::Error::new(io::ErrorKind::UnexpectedEof, $err_msg))),
             Err(e) => return Err(MessageError::IoError(e)),
         }
     })
@@ -161,7 +163,6 @@ impl LogEntryMetadata {
 }
 
 
-
 impl Segment {
     // TODO: open variant for reading
 
@@ -264,7 +265,8 @@ mod tests {
 
     #[test]
     fn message_read_invalid_crc() {
-        let mut msg = Message::new(b"123456789", 1234567u64).bytes().iter().cloned().collect::<Vec<u8>>();
+        let mut msg =
+            Message::new(b"123456789", 1234567u64).bytes().iter().cloned().collect::<Vec<u8>>();
         // mess with the payload such that the CRC does not match
         let last_ind = msg.len() - 1;
         msg[last_ind] += 1u8;
@@ -275,12 +277,15 @@ mod tests {
             Err(MessageError::InvalidCRC) => true,
             _ => false,
         };
-        assert!(matches_invalid_crc, "Invalid result, not CRC error. Result = {:?}", read_msg_result);
+        assert!(matches_invalid_crc,
+                "Invalid result, not CRC error. Result = {:?}",
+                read_msg_result);
     }
 
     #[test]
     fn message_read_invalid_payload_length() {
-        let mut msg = Message::new(b"123456789", 1234567u64).bytes().iter().cloned().collect::<Vec<u8>>();
+        let mut msg =
+            Message::new(b"123456789", 1234567u64).bytes().iter().cloned().collect::<Vec<u8>>();
         // pop the last byte
         msg.pop();
 
@@ -290,7 +295,9 @@ mod tests {
             Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => true,
             _ => false,
         };
-        assert!(matches_invalid_crc, "Invalid result, not CRC error. Result = {:?}", read_msg_result);
+        assert!(matches_invalid_crc,
+                "Invalid result, not CRC error. Result = {:?}",
+                read_msg_result);
     }
 
     #[test]

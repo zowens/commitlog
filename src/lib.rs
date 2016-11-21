@@ -207,15 +207,17 @@ mod tests {
             log.flush().unwrap();
         }
 
-        let files = fs::read_dir(&dir).unwrap()
+        let files = fs::read_dir(&dir)
+            .unwrap()
             .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
             .collect::<HashSet<String>>();
 
-        let expected = ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.log"]
-            .iter()
-            .cloned()
-            .map(|s| s.to_string())
-            .collect::<HashSet<String>>();
+        let expected =
+            ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.log"]
+                .iter()
+                .cloned()
+                .map(|s| s.to_string())
+                .collect::<HashSet<String>>();
 
         assert_eq!(files.intersection(&expected).count(), 3);
     }
@@ -237,11 +239,14 @@ mod tests {
             log.flush().unwrap();
         }
 
-        let files = fs::read_dir(&dir).unwrap()
+        let files = fs::read_dir(&dir)
+            .unwrap()
             .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
             .collect::<HashSet<String>>();
 
-        let expected = ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.index"]
+        let expected = ["00000000000000000000.index",
+                        "00000000000000000000.log",
+                        "00000000000000000002.index"]
             .iter()
             .cloned()
             .map(|s| s.to_string())

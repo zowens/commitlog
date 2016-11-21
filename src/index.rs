@@ -121,7 +121,10 @@ impl Index {
         let filename = index_path.as_ref().file_name().unwrap().to_str().unwrap();
         let base_offset = match u64::from_str_radix(&filename[0..INDEX_FILE_NAME_LEN], 10) {
             Ok(v) => v,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Index file name does not parse as u64")),
+            Err(_) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                          "Index file name does not parse as u64"))
+            }
         };
 
 
@@ -295,8 +298,8 @@ mod tests {
                 let e = index.read_entry(i).unwrap();
                 assert!(e.is_some());
                 assert_eq!(e.unwrap().relative_offset(), i as u32);
-                assert_eq!(e.unwrap().offset(), (i+10) as u64);
-                assert_eq!(e.unwrap().file_position(), (i*10) as u32);
+                assert_eq!(e.unwrap().offset(), (i + 10) as u64);
+                assert_eq!(e.unwrap().file_position(), (i * 10) as u32);
             }
         }
 
