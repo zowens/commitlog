@@ -195,8 +195,7 @@ impl Segment {
             path_buf
         };
 
-        let f = OpenOptions::new()
-            .write(true)
+        let f = OpenOptions::new().write(true)
             .read(true)
             .create_new(true)
             .append(true)
@@ -220,8 +219,7 @@ impl Segment {
     pub fn open<P>(seg_path: P) -> io::Result<Segment>
         where P: AsRef<Path>
     {
-        let seg_file = OpenOptions::new()
-            .read(true)
+        let seg_file = OpenOptions::new().read(true)
             .write(false)
             .append(false)
             .open(&seg_path)?;
@@ -249,7 +247,7 @@ impl Segment {
     pub fn next_offset(&self) -> u64 {
         match self.mode {
             SegmentMode::ReadWrite { next_offset, .. } => next_offset,
-            _ => 0
+            _ => 0,
         }
     }
 
@@ -261,8 +259,9 @@ impl Segment {
 
     pub fn append(&mut self, payload: &[u8]) -> Result<LogEntryMetadata, SegmentAppendError> {
         let (write_pos, off, max_bytes) = match self.mode {
-            SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } =>
-                (write_pos, next_offset, max_bytes),
+            SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => {
+                (write_pos, next_offset, max_bytes)
+            }
             _ => return Err(SegmentAppendError::LogFull),
         };
 
@@ -328,12 +327,13 @@ impl Segment {
 
                     match limit {
                         ReadLimit::Messages(l) if l <= msgs.len() => return Ok(msgs),
-                        _ => {},
+                        _ => {}
                     }
-                },
+                }
                 // EOF counts as an end to the stream, thus we're done fetching messages
-                Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof =>
-                    return Ok(msgs),
+                Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    return Ok(msgs)
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -525,7 +525,9 @@ mod tests {
         f.append(b"abc").unwrap();
 
         // byte max contains message 0, but not the entirety of message 1
-        let msgs = f.read(m0.file_pos(), ReadLimit::Bytes((m1.file_pos() + 1) as usize)).unwrap();
+        let msgs = f.read(m0.file_pos(),
+                  ReadLimit::Bytes((m1.file_pos() + 1) as usize))
+            .unwrap();
         assert_eq!(1, msgs.len());
     }
 

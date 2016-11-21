@@ -4,11 +4,43 @@ use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use std::fs::{OpenOptions, File};
 use std::{u64, usize};
+use std::cmp::Ordering;
 
 /// Number of byes in each entry pair
 pub static INDEX_ENTRY_BYTES: usize = 8;
 pub static INDEX_FILE_NAME_LEN: usize = 20;
 pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
+
+fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
+    where F: Fn(usize, u32) -> Ordering
+{
+    assert!(index.len() % INDEX_ENTRY_BYTES == 0);
+
+    let mut i = 0usize;
+    let mut j = (index.len() / INDEX_ENTRY_BYTES) - 1;
+
+    while i < j {
+        // grab midpoint
+        let m = i + ((j - i) / 2);
+
+        // read the relative offset at the midpoint
+        let mi = m * INDEX_ENTRY_BYTES;
+        let rel_off = BigEndian::read_u32(&index[mi..mi + 4]);
+
+        match f(m, rel_off) {
+            Ordering::Equal => return Ok(m),
+            Ordering::Less => {
+                i = m + 1;
+            }
+            Ordering::Greater => {
+                j = m;
+            }
+        }
+    }
+
+    Err(i)
+}
+
 
 /// An index is a file with pairs of relative offset to file position offset
 /// of messages at the relative offset messages. The index is Memory Mapped.
@@ -129,17 +161,19 @@ impl Index {
 
 
         let mmap = try!(Mmap::open(&index_file, Protection::Read));
+        let next_write_pos = mmap.len();
+        // TODO: determine if there are empty holes in the file
 
         Ok(Index {
             file: index_file,
             mmap: mmap,
             mode: AccessMode::Read,
-            next_write_pos: usize::max_value(),
+            next_write_pos: next_write_pos,
             base_offset: base_offset,
         })
     }
 
-    fn can_write(&self) -> bool {
+    pub fn can_write(&self) -> bool {
         self.mode == AccessMode::ReadWrite && self.size() >= (self.next_write_pos + 8)
     }
 
@@ -209,6 +243,31 @@ impl Index {
             }
         }
     }
+
+    pub fn find(&self, offset: u64) -> Result<Option<IndexEntry>, IndexReadError> {
+        if offset < self.base_offset {
+            return Err(IndexReadError::OutOfBounds);
+        }
+
+        let rel_offset = (offset - self.base_offset) as u32;
+
+        unsafe {
+            let mem_slice = self.mmap.as_slice();
+            match binary_search(&mem_slice[0..self.next_write_pos],
+                                |_, v| v.cmp(&rel_offset)) {
+                Ok(i) => {
+                    let p = (i * 8) + 4;
+                    Ok(Some(IndexEntry {
+                        rel_offset: rel_offset,
+                        base_offset: self.base_offset,
+                        file_pos: BigEndian::read_u32(&mem_slice[p..p + 4]),
+                    }))
+                }
+                _ => Ok(None),
+            }
+        }
+
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +276,7 @@ mod tests {
     use super::super::testutil::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::cmp::Ordering;
 
     #[test]
     pub fn index() {
@@ -302,6 +362,60 @@ mod tests {
                 assert_eq!(e.unwrap().file_position(), (i * 10) as u32);
             }
         }
+    }
 
+    #[test]
+    pub fn find() {
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+        index.append(10, 1).unwrap();
+        index.append(11, 2).unwrap();
+        index.append(12, 3).unwrap();
+        index.append(15, 4).unwrap();
+        index.append(16, 5).unwrap();
+        index.append(17, 6).unwrap();
+        index.append(18, 7).unwrap();
+        index.append(20, 8).unwrap();
+
+        let res = index.find(16).unwrap().unwrap();
+        assert_eq!(6, res.relative_offset());
+        assert_eq!(16, res.offset());
+        assert_eq!(5, res.file_position());
+    }
+
+    #[test]
+    pub fn find_nonexistant_value() {
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+        index.append(10, 1).unwrap();
+        index.append(11, 2).unwrap();
+        index.append(12, 3).unwrap();
+        index.append(15, 4).unwrap();
+        index.append(16, 5).unwrap();
+        index.append(17, 6).unwrap();
+        index.append(18, 7).unwrap();
+        index.append(20, 8).unwrap();
+
+        let res = index.find(14);
+        assert!(res.is_ok());
+        assert!(res.unwrap().is_none());
+    }
+
+    #[test]
+    pub fn find_out_of_bounds() {
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+        index.append(10, 1).unwrap();
+        index.append(11, 2).unwrap();
+        index.append(12, 3).unwrap();
+        index.append(15, 4).unwrap();
+        index.append(16, 5).unwrap();
+        index.append(17, 6).unwrap();
+        index.append(18, 7).unwrap();
+        index.append(20, 8).unwrap();
+
+        let res = index.find(2);
+        assert!(res.is_err());
+        assert_eq!(IndexReadError::OutOfBounds, res.err().unwrap());
     }
 }
