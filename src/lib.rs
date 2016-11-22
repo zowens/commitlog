@@ -8,6 +8,8 @@ extern crate log;
 extern crate crc;
 extern crate memmap;
 extern crate byteorder;
+
+#[cfg(test)]
 extern crate env_logger;
 
 #[cfg(test)]
