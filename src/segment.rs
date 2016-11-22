@@ -35,14 +35,13 @@ macro_rules! read_n {
 
 /// Messages are appended to the log with the following encoding:
 ///
-/// +-----------+--------------+
 /// | Bytes     | Value        |
-/// +-----------+--------------+
+/// | --------- | ------------ |
 /// | 0-7       | Offset       |
 /// | 8-11      | Payload Size |
 /// | 12-15     | CRC32 (IEEE) |
 /// | 16+       | Payload      |
-/// +-----------+--------------+
+///
 #[derive(Debug)]
 pub struct Message {
     bytes: Vec<u8>,
@@ -86,31 +85,32 @@ impl Message {
         Ok(Message { bytes: bytes })
     }
 
+    /// Serialized representation of the message, in mytes.
     #[inline]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 
+    /// IEEE CRC32 of the payload.
     #[inline]
-    #[allow(dead_code)]
     pub fn crc(&self) -> u32 {
         BigEndian::read_u32(&self.bytes[12..16])
     }
 
+    /// Size of the payload.
     #[inline]
-    #[allow(dead_code)]
     pub fn size(&self) -> u32 {
         BigEndian::read_u32(&self.bytes[8..12])
     }
 
+    /// Offset of the message in the log.
     #[inline]
-    #[allow(dead_code)]
     pub fn offset(&self) -> u64 {
         BigEndian::read_u64(&self.bytes[0..8])
     }
 
+    /// Payload of the message.
     #[inline]
-    #[allow(dead_code)]
     pub fn payload(&self) -> &[u8] {
         &self.bytes[16..]
     }
@@ -176,8 +176,12 @@ impl LogEntryMetadata {
     }
 }
 
+/// Batch size limitation on read.
 pub enum ReadLimit {
+    /// Limit the number of bytes read from the log. This is recommended.
     Bytes(usize),
+
+    /// Limit the number of messages read from the log.
     Messages(usize),
 }
 

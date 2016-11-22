@@ -99,6 +99,7 @@ pub struct LogOptions {
 }
 
 impl LogOptions {
+    /// Creates minimal LogOptions with a directory containing the log.
     pub fn new<P>(log_dir: P) -> LogOptions
         where P: AsRef<Path>
     {
@@ -125,8 +126,8 @@ impl LogOptions {
 }
 
 /// The commit log is an append-only data structure that can be used in a variety
-/// of use-cases, such as tracking sequences of events, logging transactions in a
-/// local database, or replicated state machines.
+/// of use-cases, such as tracking sequences of events, transactions
+/// or replicated state machines.
 ///
 /// This implementation of the commit log data structure uses log segments
 /// that roll over at pre-defined maximum size boundaries. The messages appended
