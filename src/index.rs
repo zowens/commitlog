@@ -8,7 +8,9 @@ use std::cmp::Ordering;
 
 /// Number of byes in each entry pair
 pub static INDEX_ENTRY_BYTES: usize = 8;
+/// Number of bytes contained in the base name of the file.
 pub static INDEX_FILE_NAME_LEN: usize = 20;
+/// File extension for the index file.
 pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
 fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
@@ -84,7 +86,6 @@ impl IndexEntry {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn file_position(&self) -> u32 {
         self.file_pos
     }
@@ -94,11 +95,6 @@ impl IndexEntry {
 pub enum IndexWriteError {
     IndexFull,
     OffsetLessThanBase,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum IndexReadError {
-    OutOfBounds,
 }
 
 impl Index {
@@ -226,10 +222,10 @@ impl Index {
         self.file.flush()
     }
 
-    #[allow(dead_code)]
-    pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, IndexReadError> {
+    #[cfg(test)]
+    pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, ()> {
         if self.size() < (i + 1) * 8 {
-            return Err(IndexReadError::OutOfBounds);
+            return Err(());
         }
 
         unsafe {

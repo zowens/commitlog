@@ -4,7 +4,9 @@ use crc::crc32::checksum_ieee;
 use byteorder::{BigEndian, ByteOrder};
 use std::io::{self, Write, Read, BufReader, Seek, SeekFrom};
 
+/// Number of bytes contained in the base name of the file.
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
+/// File extension for the segment file.
 pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
 
 #[derive(Debug)]
@@ -256,7 +258,6 @@ impl Segment {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn starting_offset(&self) -> u64 {
         self.base_offset
     }
@@ -305,15 +306,6 @@ impl Segment {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn read_at_pos(&mut self, file_pos: u32) -> Result<Message, MessageError> {
-        self.seek(file_pos)?;
-        let mut buf_reader = BufReader::new(&mut self.file);
-        let msg = Message::read(&mut buf_reader)?;
-        Ok(msg)
-    }
-
-    #[allow(dead_code)]
     pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<Vec<Message>, MessageError> {
         self.seek(file_pos)?;
 
@@ -453,41 +445,6 @@ mod tests {
             let f = res.unwrap();
             assert_eq!(0, f.starting_offset());
         }
-    }
-
-    #[test]
-    pub fn log_read_at() {
-        let log_dir = TestDir::new();
-        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
-
-        let m0 = f.append(b"0123456789").unwrap();
-        let m1 = f.append(b"aaaaaaaaaa").unwrap();
-        let m2 = f.append(b"abc").unwrap();
-
-        let m0read = f.read_at_pos(m0.file_pos());
-        assert!(m0read.is_ok(), "Err reading message 0: {:?}", m0read.err());
-        assert_eq!(b"0123456789", m0read.as_ref().unwrap().payload());
-        assert_eq!(0, m0read.as_ref().unwrap().offset());
-
-        let m3 = f.append(b"MIDDLE WRITE").unwrap();
-
-        let m1read = f.read_at_pos(m1.file_pos());
-        assert!(m0read.is_ok(), "Err reading message 1: {:?}", m1read.err());
-        assert_eq!(b"aaaaaaaaaa", m1read.as_ref().unwrap().payload());
-        assert_eq!(1, m1read.as_ref().unwrap().offset());
-
-        let m2read = f.read_at_pos(m2.file_pos());
-        assert!(m2read.is_ok(), "Err reading message 2: {:?}", m2read.err());
-        assert_eq!(b"abc", m2read.as_ref().unwrap().payload());
-        assert_eq!(2, m2read.as_ref().unwrap().offset());
-
-        let m3read = f.read_at_pos(m3.file_pos());
-        assert!(m2read.is_ok(), "Err reading message 3: {:?}", m3read.err());
-        assert_eq!(b"MIDDLE WRITE", m3read.as_ref().unwrap().payload());
-        assert_eq!(3, m3read.as_ref().unwrap().offset());
-
-        let non_exist_res = f.read_at_pos(m3.file_pos() * 2);
-        assert!(non_exist_res.is_err());
     }
 
     #[test]
