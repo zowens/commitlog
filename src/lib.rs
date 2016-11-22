@@ -170,7 +170,7 @@ impl CommitLog {
     /// Appends a log entry to the commit log, returning the offset of the appended entry.
     pub fn append(&mut self, payload: &[u8]) -> Result<Offset, AppendError> {
         // first write to the current segment
-        let meta = try!(self.active_segment
+        let meta = self.active_segment
             .append(payload)
             .or_else(|e| {
                 match e {
@@ -201,7 +201,7 @@ impl CommitLog {
                     }
                     SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
                 }
-            }));
+            })?;
 
         // write to the index
         self.active_index
@@ -244,16 +244,15 @@ impl CommitLog {
             ReadPosition::Offset(Offset(v)) => v,
         };
 
-        // find the appropriate index
         // TODO: change index find to be >= to offset
-        let active_start_off = self.active_index.starting_offset();
 
         // find the file position from the index
+        let active_start_off = self.active_index.starting_offset();
         let index_entry_res = if start_off >= active_start_off {
-            info!("using active index");
+            trace!("Reading offset {} from active index", start_off);
             self.active_index.find(start_off)
         } else {
-            info!("using old index");
+            trace!("Reading offset {} from old index", start_off);
             let found_index = self.closed_indexes
                 .range(Bound::Unbounded, Bound::Included(&start_off))
                 .next_back();
@@ -268,21 +267,22 @@ impl CommitLog {
             }
         };
 
-        // find the correct segment
+        // find the correct segment and read the log entry
         let active_seg_start_off = self.active_segment.starting_offset();
+
         if start_off >= active_seg_start_off {
-            info!("Reading from active index at file pos {}", file_pos);
+            trace!("Reading from active index at file pos {}", file_pos);
             Ok(self.active_segment.read(file_pos, limit)?)
         } else {
             let mut r = self.closed_segments
                 .range_mut(Bound::Unbounded, Bound::Included(&start_off));
             match r.next_back() {
                 Some((_, ref mut s)) => {
-                    info!("Reading from old index at file pos {}", file_pos);
+                    trace!("Reading messages from old index at file pos {}", file_pos);
                     Ok(s.read(file_pos, limit)?)
                 }
                 _ => {
-                    info!("No index found for off {}", start_off);
+                    warn!("No segment found for offset {}", start_off);
                     Ok(Vec::with_capacity(0))
                 }
             }
