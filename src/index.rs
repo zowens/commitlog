@@ -169,7 +169,6 @@ impl Index {
         let mut mmap = Mmap::open(&index_file, Protection::Read)?;
 
         // TODO: truncate index file from 0s
-        // TODO: delete if necessary
         let next_entry = unsafe {
             let index = mmap.as_mut_slice();
             assert!(index.len() % INDEX_ENTRY_BYTES == 0);
@@ -179,27 +178,29 @@ impl Index {
             let last_val = BigEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
-                binary_search(index, |x, y| {
-                    // we're at the first position, its assumed that the
-                    // file entry is 0 (go right)
-                    if x == 0 {
-                        Ordering::Less
-                    // if the relative offset is 0, there is potentially
-                    // another 0 offset less than this position (go left)
-                    } else if y == 0 {
-                        Ordering::Greater
-                    // else, it's non-zero (go right)
-                    } else {
-                        Ordering::Less
-                    }
-                // always error (nothing equal) so unwrap
-                }).err().unwrap()
+                binary_search(index, |i, rel_off| {
+                        // if the relative offset is > 0 OR we're
+                        // at the first position (its assumed that the
+                        // file entry is 0) then go right
+                        //
+                        // otherwise, go left to find the first relative
+                        // offset equal to 0, but not the first
+                        if rel_off > 0 || i == 0 {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    })
+                    .err()
+                    .unwrap()
             } else {
                 index.len() / INDEX_ENTRY_BYTES
             }
         };
 
-        info!("Opening index {}, next relative entry {}", filename, next_entry);
+        info!("Opening index {}, next relative entry {}",
+              filename,
+              next_entry);
 
         Ok(Index {
             file: index_file,
@@ -211,7 +212,8 @@ impl Index {
     }
 
     pub fn can_write(&self) -> bool {
-        self.mode == AccessMode::ReadWrite && self.size() >= (self.next_write_pos + INDEX_ENTRY_BYTES)
+        self.mode == AccessMode::ReadWrite &&
+        self.size() >= (self.next_write_pos + INDEX_ENTRY_BYTES)
     }
 
     #[inline]

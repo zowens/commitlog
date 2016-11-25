@@ -201,12 +201,12 @@ impl CommitLog {
                         Err(e) => {
                             error!("Unable to open segment {:?}: {}", f.path(), e);
                             return Err(e);
-                        },
+                        }
                     };
 
                     let offset = segment.starting_offset();
                     segments.insert(offset, segment);
-                },
+                }
                 Some(ext) if index::INDEX_FILE_NAME_EXTENSION.eq(ext) => {
                     // TODO: truncate index file from 0s
                     let index = match Index::open(f.path()) {
@@ -214,13 +214,13 @@ impl CommitLog {
                         Err(e) => {
                             error!("Unable to open index {:?}: {}", f.path(), e);
                             return Err(e);
-                        },
+                        }
                     };
 
                     let offset = index.starting_offset();
                     indexes.insert(offset, index);
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
 
