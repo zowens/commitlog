@@ -1,3 +1,18 @@
+//! The commit log is an append-only data structure that can be used in a variety
+//! of use-cases, such as tracking sequences of events, transactions
+//! or replicated state machines.
+//!
+//! This implementation of the commit log data structure uses log segments
+//! that roll over at pre-defined maximum size boundaries. The messages appended
+//! to the log have a unique, monotonically increasing offset that can be used as
+//! a pointer to a log entry.
+//!
+//! The index of the commit log logically stores the offset to a position in a
+//! log segment. The index and segments are separated, in that a
+//! segment file does not necessarily correspond to one particular segment file,
+//! it could contain file pointers to many segment files. In addition, index files
+//! are memory-mapped for efficient read and write access.
+
 #![feature(test, btree_range, collections_bound)]
 
 // (for test) This is silly...
@@ -127,20 +142,7 @@ impl LogOptions {
     }
 }
 
-/// The commit log is an append-only data structure that can be used in a variety
-/// of use-cases, such as tracking sequences of events, transactions
-/// or replicated state machines.
-///
-/// This implementation of the commit log data structure uses log segments
-/// that roll over at pre-defined maximum size boundaries. The messages appended
-/// to the log have a unique, monotonically increasing offset that can be used as
-/// a pointer to a log entry.
-///
-/// The index of the commit log logically stores the offset to a position in the
-/// log segment corresponding. The index and segments are separated, in that a
-/// segment file does not necessarily correspond to one particular segment file,
-/// it could contain file pointers to many segment files. In addition, index files
-/// are memory-mapped for efficient read and write access.
+/// The commit log is an append-only sequence of messages.
 pub struct CommitLog {
     closed_segments: BTreeMap<u64, Segment>,
     closed_indexes: BTreeMap<u64, Index>,
@@ -209,7 +211,6 @@ impl CommitLog {
                     segments.insert(offset, segment);
                 }
                 Some(ext) if index::INDEX_FILE_NAME_EXTENSION.eq(ext) => {
-                    // TODO: truncate index file from 0s
                     let index = match Index::open(f.path()) {
                         Ok(ind) => ind,
                         Err(e) => {
@@ -220,6 +221,7 @@ impl CommitLog {
 
                     let offset = index.starting_offset();
                     indexes.insert(offset, index);
+                    // TODO: fix missing index updates (crash before write to index)
                 }
                 _ => {}
             }
