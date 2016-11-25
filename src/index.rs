@@ -40,6 +40,16 @@ fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
         }
     }
 
+
+    // HACK: we probably do not want result
+    if i == j {
+        let ii = i * INDEX_ENTRY_BYTES;
+        let rel_off = BigEndian::read_u32(&index[ii..ii + 4]);
+        if let Ordering::Equal = f(i, rel_off) {
+            return Ok(i);
+        }
+    }
+
     Err(i)
 }
 
@@ -154,21 +164,42 @@ impl Index {
         };
 
 
-        let mmap = Mmap::open(&index_file, Protection::Read)?;
-        let next_write_pos = mmap.len();
-        // TODO: determine if there are empty holes in the file
+        let mut mmap = Mmap::open(&index_file, Protection::Read)?;
+
+        // TODO: truncate index file from 0s
+        let next_entry = unsafe {
+            binary_search(mmap.as_mut_slice(), |x, y| {
+                // we're at the first position, its assumed that the
+                // file entry is 0 (go right)
+                if x == 0 {
+                    Ordering::Less
+                // if the relative offset is 0, there is potentially
+                // another 0 offset less than this position (go left)
+                } else if y == 0 {
+                    Ordering::Greater
+                // else, it's non-zero (go right)
+                } else {
+                    Ordering::Less
+                }
+            // always error (nothing equal) so unwrap
+            }).err().unwrap()
+        };
+
+        info!("Opening index {}, next relative entry {}", filename, next_entry);
+
+        // TODO: truncate file, if necessary
 
         Ok(Index {
             file: index_file,
             mmap: mmap,
             mode: AccessMode::Read,
-            next_write_pos: next_write_pos,
+            next_write_pos: next_entry * INDEX_ENTRY_BYTES,
             base_offset: base_offset,
         })
     }
 
     pub fn can_write(&self) -> bool {
-        self.mode == AccessMode::ReadWrite && self.size() >= (self.next_write_pos + 8)
+        self.mode == AccessMode::ReadWrite && self.size() >= (self.next_write_pos + INDEX_ENTRY_BYTES)
     }
 
     #[inline]
@@ -255,6 +286,7 @@ impl Index {
 
         unsafe {
             let mem_slice = self.mmap.as_slice();
+            info!("offset={} Next write pos = {}", offset, self.next_write_pos);
             match binary_search(&mem_slice[0..self.next_write_pos],
                                 |_, v| v.cmp(&rel_offset)) {
                 Ok(i) => {
@@ -278,6 +310,7 @@ mod tests {
     use super::super::testutil::*;
     use std::fs;
     use std::path::PathBuf;
+    use env_logger;
 
     #[test]
     pub fn index() {
@@ -416,5 +449,35 @@ mod tests {
 
         let res = index.find(2);
         assert!(res.is_none());
+    }
+
+    #[test]
+    pub fn reopen_index() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+        {
+            let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+            index.append(10, 1).unwrap();
+            index.append(11, 2).unwrap();
+            index.flush_sync().unwrap();
+        }
+
+        {
+            let mut index_path = PathBuf::new();
+            index_path.push(&dir);
+            index_path.push("00000000000000000010.index");
+            let index = Index::open(&index_path).unwrap();
+
+            let e0 = index.find(10);
+            assert!(e0.is_some());
+            assert_eq!(0, e0.unwrap().relative_offset());
+
+            let e1 = index.find(11);
+            assert!(e1.is_some());
+            assert_eq!(1, e1.unwrap().relative_offset());
+
+            let e2 = index.find(12);
+            assert!(e2.is_none());
+        }
     }
 }
