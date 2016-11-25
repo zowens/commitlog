@@ -1,5 +1,5 @@
 use byteorder::{BigEndian, ByteOrder};
-use memmap::{Mmap, Protection};
+use memmap::{Mmap, MmapView, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use std::fs::{OpenOptions, File};
@@ -58,7 +58,7 @@ fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
 /// of messages at the relative offset messages. The index is Memory Mapped.
 pub struct Index {
     file: File,
-    mmap: Mmap,
+    mmap: MmapView,
     mode: AccessMode,
 
     /// next starting byte in index file offset to write
@@ -135,7 +135,7 @@ impl Index {
             index_file.set_len(file_bytes as u64)?;
         }
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?;
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view();
 
         Ok(Index {
             file: index_file,
@@ -166,11 +166,10 @@ impl Index {
         };
 
 
-        let mut mmap = Mmap::open(&index_file, Protection::Read)?;
+        let mut mmap = Mmap::open(&index_file, Protection::Read)?.into_view();
 
-        // TODO: truncate index file from 0s
-        let next_entry = unsafe {
-            let index = mmap.as_mut_slice();
+        let next_write_pos = unsafe {
+            let index = mmap.as_slice();
             assert!(index.len() % INDEX_ENTRY_BYTES == 0);
 
             // check if this is a full or partial index
@@ -178,7 +177,7 @@ impl Index {
             let last_val = BigEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
-                binary_search(index, |i, rel_off| {
+                let next_entry = binary_search(index, |i, rel_off| {
                         // if the relative offset is > 0 OR we're
                         // at the first position (its assumed that the
                         // file entry is 0) then go right
@@ -192,21 +191,30 @@ impl Index {
                         }
                     })
                     .err()
-                    .unwrap()
+                    .unwrap();
+                next_entry * INDEX_ENTRY_BYTES
             } else {
-                index.len() / INDEX_ENTRY_BYTES
+                index.len()
             }
         };
 
-        info!("Opening index {}, next relative entry {}",
+        // trim un-used entries by reducing mmap view and truncating file
+        if next_write_pos < mmap.len() {
+            mmap.restrict(0, next_write_pos)?;
+            if let Err(e) = index_file.set_len(next_write_pos as u64) {
+                warn!("Unable to truncate index file to proper length: {:?}", e);
+            }
+        }
+
+        info!("Opening index {}, next write pos {}",
               filename,
-              next_entry);
+              next_write_pos);
 
         Ok(Index {
             file: index_file,
             mmap: mmap,
             mode: AccessMode::Read,
-            next_write_pos: next_entry * INDEX_ENTRY_BYTES,
+            next_write_pos: next_write_pos,
             base_offset: base_offset,
         })
     }
@@ -501,6 +509,8 @@ mod tests {
             let last_entry = e_last.unwrap();
             assert_eq!(1, last_entry.relative_offset());
             assert_eq!(2, last_entry.file_position());
+
+            assert_eq!(16, index.size());
         }
     }
 
