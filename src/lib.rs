@@ -156,17 +156,75 @@ impl CommitLog {
         fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
         info!("Opening log at path {:?}", &opts.log_dir.to_str());
-        let seg = Segment::new(&opts.log_dir, 0u64, opts.log_max_bytes)?;
-        let ind = Index::new(&opts.log_dir, 0u64, opts.index_max_bytes)?;
+
+        let (closed_segments, closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
+
+        // open new segment and index starting at the last index we wrote to + 1
+        let next_offset = closed_indexes.values()
+            .next_back()
+            .and_then(|ind| ind.last_entry())
+            .map(|e| e.offset() + 1)
+            .unwrap_or(0u64);
+
+        info!("Starting fresh segment and index at offset {}", next_offset);
+
+        let seg = Segment::new(&opts.log_dir, next_offset, opts.log_max_bytes)?;
+        let ind = Index::new(&opts.log_dir, next_offset, opts.index_max_bytes)?;
 
         Ok(CommitLog {
-            closed_segments: BTreeMap::new(),
-            closed_indexes: BTreeMap::new(),
+            closed_segments: closed_segments,
+            closed_indexes: closed_indexes,
 
             active_segment: seg,
             active_index: ind,
             options: opts,
         })
+    }
+
+    fn load_log<P>(dir: P) -> io::Result<(BTreeMap<u64, Segment>, BTreeMap<u64, Index>)>
+        where P: AsRef<Path>
+    {
+        let mut segments = BTreeMap::new();
+        let mut indexes = BTreeMap::new();
+
+        let files = fs::read_dir(dir)?
+            // ignore Err results
+            .filter_map(|e| e.ok())
+            // ignore directories
+            .filter(|e| e.metadata().map(|m| m.is_file()).unwrap_or(false));
+
+        for f in files {
+            match f.path().extension() {
+                Some(ext) if segment::SEGMENT_FILE_NAME_EXTENSION.eq(ext) => {
+                    let segment = match Segment::open(f.path()) {
+                        Ok(seg) => seg,
+                        Err(e) => {
+                            error!("Unable to open segment {:?}: {}", f.path(), e);
+                            return Err(e);
+                        },
+                    };
+
+                    let offset = segment.starting_offset();
+                    segments.insert(offset, segment);
+                },
+                Some(ext) if index::INDEX_FILE_NAME_EXTENSION.eq(ext) => {
+                    // TODO: truncate index file from 0s
+                    let index = match Index::open(f.path()) {
+                        Ok(ind) => ind,
+                        Err(e) => {
+                            error!("Unable to open index {:?}: {}", f.path(), e);
+                            return Err(e);
+                        },
+                    };
+
+                    let offset = index.starting_offset();
+                    indexes.insert(offset, index);
+                },
+                _ => {},
+            }
+        }
+
+        Ok((segments, indexes))
     }
 
     /// Appends a log entry to the commit log, returning the offset of the appended entry.
@@ -384,7 +442,7 @@ mod tests {
 
     #[test]
     pub fn read_entries() {
-        env_logger::init().unwrap();
+        env_logger::init().unwrap_or(());
 
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
@@ -423,6 +481,40 @@ mod tests {
             assert_eq!(vec![33, 34, 35],
                        boundary_read.into_iter().map(|v| v.offset()).collect::<Vec<_>>());
         }
+    }
 
+    #[test]
+    pub fn reopen_log() {
+        env_logger::init().unwrap_or(());
+
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.max_index_items(20);
+        opts.max_bytes_log(1000);
+
+        {
+            let mut log = CommitLog::new(opts.clone()).unwrap();
+
+            for i in 0..99 {
+                let s = format!("some data {}", i);
+                let Offset(off) = log.append(s.as_bytes()).unwrap();
+                assert_eq!(i, off);
+            }
+            log.flush().unwrap();
+        }
+
+        {
+            let mut log = CommitLog::new(opts).unwrap();
+
+            let active_index_read =
+                log.read(ReadPosition::Offset(Offset(82)), ReadLimit::Messages(5)).unwrap();
+
+            assert_eq!(5, active_index_read.len());
+            assert_eq!(vec![82, 83, 84, 85, 86],
+                       active_index_read.into_iter().map(|v| v.offset()).collect::<Vec<_>>());
+
+            let Offset(off) = log.append(b"moar data").unwrap();
+            assert_eq!(99, off);
+        }
     }
 }

@@ -120,6 +120,8 @@ impl Index {
             path_buf
         };
 
+        info!("Creating index file {:?}", &index_path);
+
         let index_file = OpenOptions::new().read(true)
             .write(true)
             .append(true)
@@ -167,27 +169,37 @@ impl Index {
         let mut mmap = Mmap::open(&index_file, Protection::Read)?;
 
         // TODO: truncate index file from 0s
+        // TODO: delete if necessary
         let next_entry = unsafe {
-            binary_search(mmap.as_mut_slice(), |x, y| {
-                // we're at the first position, its assumed that the
-                // file entry is 0 (go right)
-                if x == 0 {
-                    Ordering::Less
-                // if the relative offset is 0, there is potentially
-                // another 0 offset less than this position (go left)
-                } else if y == 0 {
-                    Ordering::Greater
-                // else, it's non-zero (go right)
-                } else {
-                    Ordering::Less
-                }
-            // always error (nothing equal) so unwrap
-            }).err().unwrap()
+            let index = mmap.as_mut_slice();
+            assert!(index.len() % INDEX_ENTRY_BYTES == 0);
+
+            // check if this is a full or partial index
+            let last_rel_ind_start = index.len() - INDEX_ENTRY_BYTES;
+            let last_val = BigEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
+            if last_val == 0 {
+                // partial index, search for break point
+                binary_search(index, |x, y| {
+                    // we're at the first position, its assumed that the
+                    // file entry is 0 (go right)
+                    if x == 0 {
+                        Ordering::Less
+                    // if the relative offset is 0, there is potentially
+                    // another 0 offset less than this position (go left)
+                    } else if y == 0 {
+                        Ordering::Greater
+                    // else, it's non-zero (go right)
+                    } else {
+                        Ordering::Less
+                    }
+                // always error (nothing equal) so unwrap
+                }).err().unwrap()
+            } else {
+                index.len() / INDEX_ENTRY_BYTES
+            }
         };
 
         info!("Opening index {}, next relative entry {}", filename, next_entry);
-
-        // TODO: truncate file, if necessary
 
         Ok(Index {
             file: index_file,
@@ -253,10 +265,13 @@ impl Index {
         self.file.flush()
     }
 
-    #[cfg(test)]
-    pub fn read_entry(&self, i: usize) -> Result<Option<IndexEntry>, ()> {
+    pub fn last_entry(&self) -> Option<IndexEntry> {
+        self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
+    }
+
+    pub fn read_entry(&self, i: usize) -> Option<IndexEntry> {
         if self.size() < (i + 1) * 8 {
-            return Err(());
+            return None;
         }
 
         unsafe {
@@ -264,14 +279,14 @@ impl Index {
             let start = i * 8;
             let offset = BigEndian::read_u32(&mem_slice[start..start + 4]);
             if offset == 0 && i > 0 {
-                Ok(None)
+                None
             } else {
                 let pos = BigEndian::read_u32(&mem_slice[start + 4..start + 8]);
-                Ok(Some(IndexEntry {
+                Some(IndexEntry {
                     rel_offset: offset,
                     base_offset: self.base_offset,
                     file_pos: pos,
-                }))
+                })
             }
         }
     }
@@ -322,18 +337,18 @@ mod tests {
         index.append(12u64, 0xeeee).unwrap();
         index.flush_sync().unwrap();
 
-        let e0 = index.read_entry(0).unwrap().unwrap();
+        let e0 = index.read_entry(0).unwrap();
         assert_eq!(2u32, e0.relative_offset());
         assert_eq!(11u64, e0.offset());
         assert_eq!(0xffff, e0.file_position());
 
-        let e1 = index.read_entry(1).unwrap().unwrap();
+        let e1 = index.read_entry(1).unwrap();
         assert_eq!(3u32, e1.relative_offset());
         assert_eq!(12u64, e1.offset());
         assert_eq!(0xeeee, e1.file_position());
 
         // read an entry that does not exist
-        let e2 = index.read_entry(2).unwrap();
+        let e2 = index.read_entry(2);
         assert_eq!(None, e2);
     }
 
@@ -353,13 +368,13 @@ mod tests {
                    Err(IndexWriteError::IndexFull));
 
 
-        let e1 = index.read_entry(1).unwrap().unwrap();
+        let e1 = index.read_entry(1).unwrap();
         assert_eq!(2u32, e1.relative_offset());
         assert_eq!(12u64, e1.offset());
         assert_eq!(0xeeee, e1.file_position());
 
         // read an entry that does not exist
-        let e2 = index.read_entry(2).unwrap();
+        let e2 = index.read_entry(2);
         assert_eq!(None, e2);
     }
 
@@ -389,7 +404,7 @@ mod tests {
             let index = Index::open(&index_path).unwrap();
 
             for i in 0..5usize {
-                let e = index.read_entry(i).unwrap();
+                let e = index.read_entry(i);
                 assert!(e.is_some());
                 assert_eq!(e.unwrap().relative_offset(), i as u32);
                 assert_eq!(e.unwrap().offset(), (i + 10) as u64);
@@ -452,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    pub fn reopen_index() {
+    pub fn reopen_partial_index() {
         env_logger::init().unwrap_or(());
         let dir = TestDir::new();
         {
@@ -478,6 +493,48 @@ mod tests {
 
             let e2 = index.find(12);
             assert!(e2.is_none());
+
+            let e_last = index.last_entry();
+            assert!(e_last.is_some());
+            let last_entry = e_last.unwrap();
+            assert_eq!(1, last_entry.relative_offset());
+            assert_eq!(2, last_entry.file_position());
+        }
+    }
+
+    #[test]
+    pub fn reopen_full_index() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+        {
+            let mut index = Index::new(&dir, 10u64, 16usize).unwrap();
+            index.append(10, 1).unwrap();
+            index.append(11, 2).unwrap();
+            index.flush_sync().unwrap();
+        }
+
+        {
+            let mut index_path = PathBuf::new();
+            index_path.push(&dir);
+            index_path.push("00000000000000000010.index");
+            let index = Index::open(&index_path).unwrap();
+
+            let e0 = index.find(10);
+            assert!(e0.is_some());
+            assert_eq!(0, e0.unwrap().relative_offset());
+
+            let e1 = index.find(11);
+            assert!(e1.is_some());
+            assert_eq!(1, e1.unwrap().relative_offset());
+
+            let e2 = index.find(12);
+            assert!(e2.is_none());
+
+            let e_last = index.last_entry();
+            assert!(e_last.is_some());
+            let last_entry = e_last.unwrap();
+            assert_eq!(1, last_entry.relative_offset());
+            assert_eq!(2, last_entry.file_position());
         }
     }
 }
