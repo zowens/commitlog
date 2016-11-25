@@ -221,7 +221,6 @@ impl Segment {
         })
     }
 
-    #[allow(dead_code)]
     pub fn open<P>(seg_path: P) -> io::Result<Segment>
         where P: AsRef<Path>
     {

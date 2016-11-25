@@ -147,6 +147,7 @@ pub struct CommitLog {
 
     active_segment: Segment,
     active_index: Index,
+
     options: LogOptions,
 }
 
@@ -155,7 +156,7 @@ impl CommitLog {
         // TODO: figure out what's already been written to
         fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
-        info!("Opening log at path {:?}", &opts.log_dir.to_str());
+        info!("Opening log in directory {:?}", &opts.log_dir.to_str());
 
         let (closed_segments, closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
 

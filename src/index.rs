@@ -83,14 +83,12 @@ pub struct IndexEntry {
 }
 
 impl IndexEntry {
-    #[inline]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn relative_offset(&self) -> u32 {
         self.rel_offset
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn offset(&self) -> u64 {
         self.base_offset + (self.rel_offset as u64)
     }
@@ -165,7 +163,6 @@ impl Index {
             }
         };
 
-
         let mut mmap = Mmap::open(&index_file, Protection::Read)?.into_view();
 
         let next_write_pos = unsafe {
@@ -202,7 +199,9 @@ impl Index {
         if next_write_pos < mmap.len() {
             mmap.restrict(0, next_write_pos)?;
             if let Err(e) = index_file.set_len(next_write_pos as u64) {
-                warn!("Unable to truncate index file to proper length: {:?}", e);
+                warn!("Unable to truncate index file {} to proper length: {:?}",
+                      filename,
+                      e);
             }
         }
 
