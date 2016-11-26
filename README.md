@@ -3,6 +3,20 @@
 Commit log library for rust. It is intended to be used in various higher-level distributed abstractions on top
 of a distributed log.
 
+[![Crates.io](https://img.shields.io/crates/v/commitlog.svg?maxAge=2592000)]()
+
+[Documentation](https://docs.rs/commitlog/0.0.1/commitlog/)
+
+
+## Usage
+
+First, add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+commitlog = "0.0.1"
+```
+
 ```rust
 extern crate commitlog;
 
