@@ -1,9 +1,10 @@
 extern crate commitlog;
 
 use commitlog::*;
+use std::time::{self, SystemTime};
 
 fn main() {
-    let opts = LogOptions::new("log");
+    let opts = LogOptions::new(format!(".log{}", SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap().as_secs()));
     let mut log = CommitLog::new(opts).unwrap();
 
     // append to the log
