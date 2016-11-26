@@ -13,7 +13,7 @@ pub static INDEX_FILE_NAME_LEN: usize = 20;
 /// File extension for the index file.
 pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
-fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
+fn binary_search<F>(index: &[u8], f: F) -> usize
     where F: Fn(usize, u32) -> Ordering
 {
     assert!(index.len() % INDEX_ENTRY_BYTES == 0);
@@ -30,7 +30,7 @@ fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
         let rel_off = BigEndian::read_u32(&index[mi..mi + 4]);
 
         match f(m, rel_off) {
-            Ordering::Equal => return Ok(m),
+            Ordering::Equal => return m,
             Ordering::Less => {
                 i = m + 1;
             }
@@ -39,18 +39,7 @@ fn binary_search<F>(index: &[u8], f: F) -> Result<usize, usize>
             }
         }
     }
-
-
-    // HACK: we probably do not want result
-    if i == j {
-        let ii = i * INDEX_ENTRY_BYTES;
-        let rel_off = BigEndian::read_u32(&index[ii..ii + 4]);
-        if let Ordering::Equal = f(i, rel_off) {
-            return Ok(i);
-        }
-    }
-
-    Err(i)
+    i
 }
 
 
@@ -174,7 +163,7 @@ impl Index {
             let last_val = BigEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
-                let next_entry = binary_search(index, |i, rel_off| {
+                INDEX_ENTRY_BYTES * binary_search(index, |i, rel_off| {
                         // if the relative offset is > 0 OR we're
                         // at the first position (its assumed that the
                         // file entry is 0) then go right
@@ -187,9 +176,6 @@ impl Index {
                             Ordering::Greater
                         }
                     })
-                    .err()
-                    .unwrap();
-                next_entry * INDEX_ENTRY_BYTES
             } else {
                 index.len()
             }
@@ -300,6 +286,13 @@ impl Index {
         }
     }
 
+    // Finds the index entry corresponding to the offset.
+    //
+    // If the entry does not exist in the index buy an entry > the offset
+    // exists, that entry is used.
+    //
+    // If the entry does not exist and the last entry is < the desired,
+    // the offset has not been written to this index and None value is returned.
     pub fn find(&self, offset: u64) -> Option<IndexEntry> {
         if offset < self.base_offset {
             // pathological case... not worth exposing Result
@@ -310,18 +303,28 @@ impl Index {
 
         unsafe {
             let mem_slice = self.mmap.as_slice();
-            info!("offset={} Next write pos = {}", offset, self.next_write_pos);
-            match binary_search(&mem_slice[0..self.next_write_pos],
-                                |_, v| v.cmp(&rel_offset)) {
-                Ok(i) => {
-                    let p = (i * 8) + 4;
+            trace!("offset={} Next write pos = {}", offset, self.next_write_pos);
+            let i = binary_search(&mem_slice[0..self.next_write_pos],
+                                |_, v| v.cmp(&rel_offset));
+            trace!("Found offset {} at entry {}", offset, i);
+
+            if i < self.next_write_pos / INDEX_ENTRY_BYTES {
+                let entry_start = i * INDEX_ENTRY_BYTES;
+                let rel_offset_val = BigEndian::read_u32(&mem_slice[entry_start..entry_start + 4]);
+                let file_pos_val = BigEndian::read_u32(&mem_slice[entry_start + 4..entry_start + 8]);
+
+                // ignore if the offset is < desired (does not exist in this index)
+                if rel_offset_val < rel_offset {
+                    None
+                } else {
                     Some(IndexEntry {
-                        rel_offset: rel_offset,
+                        rel_offset: rel_offset_val,
                         base_offset: self.base_offset,
-                        file_pos: BigEndian::read_u32(&mem_slice[p..p + 4]),
+                        file_pos: file_pos_val,
                     })
                 }
-                _ => None,
+            } else {
+                None
             }
         }
 
@@ -442,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    pub fn find_nonexistant_value() {
+    pub fn find_nonexistant_value_finds_next() {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
         index.append(10, 1).unwrap();
@@ -454,7 +457,26 @@ mod tests {
         index.append(18, 7).unwrap();
         index.append(20, 8).unwrap();
 
-        let res = index.find(14);
+        let res = index.find(14).unwrap();
+        assert_eq!(15, res.offset());
+        assert_eq!(5, res.relative_offset());
+        assert_eq!(4, res.file_position());
+    }
+
+    #[test]
+    pub fn find_nonexistant_value_greater_than_max() {
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+        index.append(10, 1).unwrap();
+        index.append(11, 2).unwrap();
+        index.append(12, 3).unwrap();
+        index.append(15, 4).unwrap();
+        index.append(16, 5).unwrap();
+        index.append(17, 6).unwrap();
+        index.append(18, 7).unwrap();
+        index.append(20, 8).unwrap();
+
+        let res = index.find(21);
         assert!(res.is_none());
     }
 
