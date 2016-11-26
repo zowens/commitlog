@@ -2,6 +2,11 @@
 authors = ["Zack Owens <zowens2009@gmail.com>"]
 name = "commitlog"
 version = "0.0.1"
+description = "Implementation of an append-only commit log backed by disk."
+repository = "https://github.com/zowens/commitlog"
+homepage = "https://github.com/zowens/commitlog"
+readme = "README.md"
+license = "MIT"
 
 [dependencies]
 byteorder = "0.5.3"

@@ -15,7 +15,7 @@
 //!
 //! ## Example
 //!
-//! ```
+//! ```rust,ignore
 //! extern crate commitlog;
 //!
 //! use commitlog::*;
