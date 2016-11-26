@@ -37,12 +37,12 @@ macro_rules! read_n {
 
 /// Messages are appended to the log with the following encoding:
 ///
-/// | Bytes     | Value        |
-/// | --------- | ------------ |
-/// | 0-7       | Offset       |
-/// | 8-11      | Payload Size |
-/// | 12-15     | CRC32 (IEEE) |
-/// | 16+       | Payload      |
+/// | Bytes     | Encoding       | Value        |
+/// | --------- | -------------- | ------------ |
+/// | 0-7       | Big Endian u64 | Offset       |
+/// | 8-11      | Big Endian u32 | Payload Size |
+/// | 12-15     | Big Endian u32 | CRC32 (IEEE) |
+/// | 16+       |                | Payload      |
 ///
 #[derive(Debug)]
 pub struct Message {
@@ -50,6 +50,7 @@ pub struct Message {
 }
 
 impl Message {
+    /// Creates a new message with a given payload and offset.
     pub fn new(payload: &[u8], offset: u64) -> Message {
         let mut bytes = vec![0; 16 + payload.len()];
         BigEndian::write_u64(&mut bytes[0..8], offset);
@@ -59,6 +60,7 @@ impl Message {
         Message { bytes: bytes }
     }
 
+    /// Reads a single message.
     pub fn read<R>(reader: &mut R) -> Result<Message, MessageError>
         where R: Read
     {
@@ -87,7 +89,7 @@ impl Message {
         Ok(Message { bytes: bytes })
     }
 
-    /// Serialized representation of the message, in mytes.
+    /// Serialized representation of the message, in bytes.
     #[inline]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes

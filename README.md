@@ -9,6 +9,7 @@ extern crate commitlog;
 use commitlog::*;
 
 fn main() {
+    // open a directory called 'log' for segment and index storage
     let opts = LogOptions::new("log");
     let mut log = CommitLog::new(opts).unwrap();
 

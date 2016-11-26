@@ -133,7 +133,6 @@ impl Index {
         })
     }
 
-    #[allow(dead_code)]
     pub fn open<P>(index_path: P) -> io::Result<Index>
         where P: AsRef<Path>
     {

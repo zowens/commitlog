@@ -12,6 +12,34 @@
 //! segment file does not necessarily correspond to one particular segment file,
 //! it could contain file pointers to many segment files. In addition, index files
 //! are memory-mapped for efficient read and write access.
+//!
+//! ## Example
+//!
+//! ```
+//! extern crate commitlog;
+//!
+//! use commitlog::*;
+//!
+//! fn main() {
+//!     // open a directory called 'log' for segment and index storage
+//!     let opts = LogOptions::new("log");
+//!     let mut log = CommitLog::new(opts).unwrap();
+//!
+//!     // append to the log
+//!     log.append(b"hello world").unwrap(); // offset 0
+//!     log.append(b"second message").unwrap(); // offset 1
+//!
+//!     // read the messages
+//!     let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
+//!     for msg in messages {
+//!         println!("{} - {}", msg.offset(), String::from_utf8_lossy(msg.payload()));
+//!     }
+//!
+//!     // prints:
+//!     //    0 - hello world
+//!     //    1 - second message
+//! }
+//! ```
 
 #![feature(test, btree_range, collections_bound)]
 
@@ -87,7 +115,9 @@ pub enum ReadPosition {
 /// Error enum for commit log read operation.
 #[derive(Debug)]
 pub enum ReadError {
+    /// Underlying IO error encountered by reading from the log
     Io(io::Error),
+    /// A segment in the log is corrupt, or the index itself is corrupt
     CorruptLog,
 }
 
@@ -116,27 +146,31 @@ pub struct LogOptions {
 }
 
 impl LogOptions {
-    /// Creates minimal LogOptions with a directory containing the log.
+    /// Creates minimal log options value with a directory containing the log.
+    ///
+    /// The default values are:
+    /// - *segment_max_bytes*: 1GB
+    /// - *index_max_entries*: 100,000
     pub fn new<P>(log_dir: P) -> LogOptions
         where P: AsRef<Path>
     {
         LogOptions {
             log_dir: log_dir.as_ref().to_owned(),
-            log_max_bytes: 100 * 1024 * 1024,
+            log_max_bytes: 1_000_000_000,
             index_max_bytes: 800_000,
         }
     }
 
     /// Bounds the size of a log segment to a number of bytes.
     #[inline]
-    pub fn max_bytes_log(&mut self, bytes: usize) -> &mut LogOptions {
+    pub fn segment_max_bytes(&mut self, bytes: usize) -> &mut LogOptions {
         self.log_max_bytes = bytes;
         self
     }
 
     /// Bounds the size of an individual memory-mapped index file.
     #[inline]
-    pub fn max_index_items(&mut self, items: usize) -> &mut LogOptions {
+    pub fn index_max_items(&mut self, items: usize) -> &mut LogOptions {
         self.index_max_bytes = items * INDEX_ENTRY_BYTES;
         self
     }
@@ -382,7 +416,7 @@ mod tests {
     pub fn append_new_segment() {
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
-        opts.max_bytes_log(52);
+        opts.segment_max_bytes(52);
 
         {
             let mut log = CommitLog::new(opts).unwrap();
@@ -414,7 +448,7 @@ mod tests {
     pub fn append_new_index() {
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
-        opts.max_index_items(2);
+        opts.index_max_items(2);
 
         {
             let mut log = CommitLog::new(opts).unwrap();
@@ -449,8 +483,8 @@ mod tests {
 
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
-        opts.max_index_items(20);
-        opts.max_bytes_log(1000);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(1000);
         let mut log = CommitLog::new(opts).unwrap();
 
         for i in 0..100 {
@@ -492,8 +526,8 @@ mod tests {
 
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
-        opts.max_index_items(20);
-        opts.max_bytes_log(1000);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(1000);
 
         {
             let mut log = CommitLog::new(opts.clone()).unwrap();

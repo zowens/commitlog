@@ -4,6 +4,7 @@ use commitlog::*;
 use std::time::{self, SystemTime};
 
 fn main() {
+    // open a directory called 'log' for segment and index storage
     let opts = LogOptions::new(format!(".log{}", SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap().as_secs()));
     let mut log = CommitLog::new(opts).unwrap();
 
