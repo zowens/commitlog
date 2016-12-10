@@ -237,7 +237,6 @@ pub struct CommitLog {
 
 impl CommitLog {
     pub fn new(opts: LogOptions) -> io::Result<CommitLog> {
-        // TODO: figure out what's already been written to
         fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
         info!("Opening log in directory {:?}", &opts.log_dir.to_str());
@@ -392,8 +391,6 @@ impl CommitLog {
             ReadPosition::Beginning => 0,
             ReadPosition::Offset(Offset(v)) => v,
         };
-
-        // TODO: change index find to be >= to offset
 
         // find the file position from the index
         let active_start_off = self.active_index.starting_offset();

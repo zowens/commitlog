@@ -3,7 +3,6 @@ extern crate commitlog;
 use commitlog::*;
 use std::time::{self, SystemTime};
 
-// TODO: fix this
 fn main() {
     // open a directory called 'log' for segment and index storage
     let opts = LogOptions::new(format!(".log{}",

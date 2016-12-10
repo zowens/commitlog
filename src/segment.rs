@@ -383,7 +383,6 @@ impl Segment {
         })
     }
 
-    // TODO: doesn't make sense
     pub fn next_offset(&self) -> u64 {
         match self.mode {
             SegmentMode::ReadWrite { next_offset, .. } => next_offset,
@@ -429,7 +428,6 @@ impl Segment {
         Ok(payload.create_metadata(off, write_pos as u32))
     }
 
-    // TODO: async flush strategy
     pub fn flush_sync(&mut self) -> io::Result<()> {
         self.file.flush()
     }
