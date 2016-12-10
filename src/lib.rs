@@ -67,6 +67,7 @@ mod testutil;
 
 use std::collections::{Bound, BTreeMap};
 use std::path::{Path, PathBuf};
+use std::fmt;
 use std::fs;
 use std::io;
 use std::mem::swap;
@@ -80,6 +81,12 @@ pub use segment::{Message, MessageSet, MessageBuf};
 /// Offset of an appended log segment.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub struct Offset(pub u64);
+
+impl fmt::Display for Offset {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Offset({})", self.0)
+    }
+}
 
 /// Offset range of log append.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -97,7 +104,7 @@ impl OffsetRange {
     pub fn iter(&self) -> OffsetRangeIter {
         OffsetRangeIter {
             pos: self.0,
-            end: self.0+ (self.1 as u64),
+            end: self.0 + (self.1 as u64),
         }
     }
 }
@@ -380,10 +387,7 @@ impl CommitLog {
         }
     }
 
-    pub fn read(&mut self,
-                start: ReadPosition,
-                limit: ReadLimit)
-                -> Result<MessageSet, ReadError> {
+    pub fn read(&mut self, start: ReadPosition, limit: ReadLimit) -> Result<MessageSet, ReadError> {
         let start_off = match start {
             ReadPosition::Beginning => 0,
             ReadPosition::Offset(Offset(v)) => v,
@@ -474,7 +478,8 @@ mod tests {
         let range = log.append(buf).unwrap();
         assert_eq!(0, range.first().0);
         assert_eq!(3, range.len());
-        assert_eq!(vec![0, 1, 2], range.iter().map(|v| v.0).collect::<Vec<u64>>());
+        assert_eq!(vec![0, 1, 2],
+                   range.iter().map(|v| v.0).collect::<Vec<u64>>());
     }
 
 
@@ -564,7 +569,7 @@ mod tests {
                 log.read(ReadPosition::Offset(Offset(82)), ReadLimit::Messages(5)).unwrap();
             assert_eq!(5, active_index_read.len());
             assert_eq!(vec![82, 83, 84, 85, 86],
-                       active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+                       active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
         }
 
         {
@@ -572,7 +577,7 @@ mod tests {
                 .unwrap();
             assert_eq!(5, old_index_read.len());
             assert_eq!(vec![5, 6, 7, 8, 9],
-                       old_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+                       old_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
         }
 
         // read at the boundary (not going to get full message limit)
@@ -582,7 +587,7 @@ mod tests {
                 .unwrap();
             assert_eq!(3, boundary_read.len());
             assert_eq!(vec![33, 34, 35],
-                       boundary_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+                       boundary_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
         }
     }
 
@@ -614,7 +619,7 @@ mod tests {
 
             assert_eq!(5, active_index_read.len());
             assert_eq!(vec![82, 83, 84, 85, 86],
-                       active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+                       active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
 
             let Offset(off) = log.append("moar data").unwrap().first();
             assert_eq!(99, off);

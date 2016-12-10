@@ -6,7 +6,11 @@ use std::time::{self, SystemTime};
 // TODO: fix this
 fn main() {
     // open a directory called 'log' for segment and index storage
-    let opts = LogOptions::new(format!(".log{}", SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap().as_secs()));
+    let opts = LogOptions::new(format!(".log{}",
+                                       SystemTime::now()
+                                           .duration_since(time::UNIX_EPOCH)
+                                           .unwrap()
+                                           .as_secs()));
     let mut log = CommitLog::new(opts).unwrap();
 
     // append to the log
@@ -16,7 +20,9 @@ fn main() {
     // read the messages
     let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
     for msg in messages.iter() {
-        println!("{} - {}", msg.offset(), String::from_utf8_lossy(msg.payload()));
+        println!("{} - {}",
+                 msg.offset(),
+                 String::from_utf8_lossy(msg.payload()));
     }
 
     // prints:

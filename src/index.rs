@@ -162,19 +162,20 @@ impl Index {
             let last_val = BigEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
-                INDEX_ENTRY_BYTES * binary_search(index, |i, rel_off| {
-                        // if the relative offset is > 0 OR we're
-                        // at the first position (its assumed that the
-                        // file entry is 0) then go right
-                        //
-                        // otherwise, go left to find the first relative
-                        // offset equal to 0, but not the first
-                        if rel_off > 0 || i == 0 {
-                            Ordering::Less
-                        } else {
-                            Ordering::Greater
-                        }
-                    })
+                INDEX_ENTRY_BYTES *
+                binary_search(index, |i, rel_off| {
+                    // if the relative offset is > 0 OR we're
+                    // at the first position (its assumed that the
+                    // file entry is 0) then go right
+                    //
+                    // otherwise, go left to find the first relative
+                    // offset equal to 0, but not the first
+                    if rel_off > 0 || i == 0 {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                })
             } else {
                 index.len()
             }
@@ -304,13 +305,14 @@ impl Index {
             let mem_slice = self.mmap.as_slice();
             trace!("offset={} Next write pos = {}", offset, self.next_write_pos);
             let i = binary_search(&mem_slice[0..self.next_write_pos],
-                                |_, v| v.cmp(&rel_offset));
+                                  |_, v| v.cmp(&rel_offset));
             trace!("Found offset {} at entry {}", offset, i);
 
             if i < self.next_write_pos / INDEX_ENTRY_BYTES {
                 let entry_start = i * INDEX_ENTRY_BYTES;
                 let rel_offset_val = BigEndian::read_u32(&mem_slice[entry_start..entry_start + 4]);
-                let file_pos_val = BigEndian::read_u32(&mem_slice[entry_start + 4..entry_start + 8]);
+                let file_pos_val = BigEndian::read_u32(&mem_slice[entry_start + 4..entry_start +
+                                                                                   8]);
 
                 // ignore if the offset is < desired (does not exist in this index)
                 if rel_offset_val < rel_offset {
