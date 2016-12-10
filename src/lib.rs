@@ -386,6 +386,7 @@ impl CommitLog {
         }
     }
 
+    /// Reads a portion of the log, starting with the ReadPosition up to the limit.
     pub fn read(&mut self, start: ReadPosition, limit: ReadLimit) -> Result<MessageSet, ReadError> {
         let start_off = match start {
             ReadPosition::Beginning => 0,
@@ -435,6 +436,7 @@ impl CommitLog {
         }
     }
 
+    /// Forces a flush of the log.
     pub fn flush(&mut self) -> io::Result<()> {
         self.active_segment.flush_sync()?;
         self.active_index.flush_sync()

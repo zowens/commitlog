@@ -81,6 +81,7 @@ impl<'a> Message<'a> {
 pub struct MessageSet {
     bytes: Vec<u8>,
     size: usize,
+    last_off: Option<u64>,
 }
 
 impl MessageSet {
@@ -89,6 +90,7 @@ impl MessageSet {
         MessageSet {
             bytes: Vec::new(),
             size: 0,
+            last_off: None,
         }
     }
 
@@ -103,6 +105,7 @@ impl MessageSet {
         let mut crc_buf = vec![0; 4];
         read_n!(reader, crc_buf, 4, "Unable to read CRC");
 
+        let off = BigEndian::read_u64(&offset_buf);
         let size = BigEndian::read_u32(&size_buf) as usize;
         let crc = BigEndian::read_u32(&crc_buf);
 
@@ -118,13 +121,22 @@ impl MessageSet {
         self.bytes.extend(size_buf);
         self.bytes.extend(crc_buf);
         self.bytes.extend(bytes);
+
         self.size += 1;
+        self.last_off = Some(off);
+
         Ok(())
     }
 
     /// Number of messages within the message set.
+    #[inline]
     pub fn len(&self) -> usize {
         self.size
+    }
+
+    /// Last offset in the MessageSet.
+    pub fn last_offset(&self) -> Option<Offset> {
+        self.last_off.map(Offset)
     }
 
     /// Message iterator.
@@ -233,6 +245,7 @@ impl MessageBuf {
         MessageSet {
             bytes: self.bytes,
             size: self.size,
+            last_off: None,
         }
     }
 }
@@ -422,7 +435,7 @@ impl Segment {
         self.file.write_all(&payload.bytes)?;
         self.mode = SegmentMode::ReadWrite {
             write_pos: write_pos + payload.bytes.len(),
-            next_offset: off + 1,
+            next_offset: off + payload.len() as u64,
             max_bytes: max_bytes,
         };
         Ok(payload.create_metadata(off, write_pos as u32))
