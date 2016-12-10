@@ -28,12 +28,12 @@ fn main() {
     let mut log = CommitLog::new(opts).unwrap();
 
     // append to the log
-    log.append(b"hello world").unwrap(); // offset 0
-    log.append(b"second message").unwrap(); // offset 1
+    log.append("hello world").unwrap(); // offset 0
+    log.append("second message").unwrap(); // offset 1
 
     // read the messages
     let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
-    for msg in messages {
+    for msg in messages.iter() {
         println!("{} - {}", msg.offset(), String::from_utf8_lossy(msg.payload()));
     }
 

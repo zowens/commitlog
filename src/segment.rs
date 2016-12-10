@@ -45,56 +45,11 @@ macro_rules! read_n {
 /// | 16+       |                | Payload      |
 ///
 #[derive(Debug)]
-pub struct Message {
-    bytes: Vec<u8>,
+pub struct Message<'a> {
+    bytes: &'a [u8],
 }
 
-impl Message {
-    /// Creates a new message with a given payload and offset.
-    pub fn new(payload: &[u8], offset: u64) -> Message {
-        let mut bytes = vec![0; 16 + payload.len()];
-        BigEndian::write_u64(&mut bytes[0..8], offset);
-        BigEndian::write_u32(&mut bytes[8..12], payload.len() as u32);
-        BigEndian::write_u32(&mut bytes[12..16], checksum_ieee(payload));
-        bytes[16..].copy_from_slice(payload);
-        Message { bytes: bytes }
-    }
-
-    /// Reads a single message.
-    pub fn read<R>(reader: &mut R) -> Result<Message, MessageError>
-        where R: Read
-    {
-        let mut offset_buf = vec![0; 8];
-        read_n!(reader, offset_buf, 8, "Unable to read offset");
-        let mut size_buf = vec![0; 4];
-        read_n!(reader, size_buf, 4, "Unable to read size");
-        let mut crc_buf = vec![0; 4];
-        read_n!(reader, crc_buf, 4, "Unable to read CRC");
-
-        let size = BigEndian::read_u32(&size_buf) as usize;
-        let crc = BigEndian::read_u32(&crc_buf);
-
-        let mut bytes = vec![0; 16 + size];
-        read_n!(reader, bytes[16..], size, "Unable to read message payload");
-
-        let payload_crc = checksum_ieee(&bytes[16..]);
-        if payload_crc != crc {
-            return Err(MessageError::InvalidCRC);
-        }
-
-        bytes[0..8].copy_from_slice(&offset_buf);
-        bytes[8..12].copy_from_slice(&size_buf);
-        bytes[12..16].copy_from_slice(&crc_buf);
-
-        Ok(Message { bytes: bytes })
-    }
-
-    /// Serialized representation of the message, in bytes.
-    #[inline]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
+impl<'a> Message<'a> {
     /// IEEE CRC32 of the payload.
     #[inline]
     pub fn crc(&self) -> u32 {
@@ -117,6 +72,169 @@ impl Message {
     #[inline]
     pub fn payload(&self) -> &[u8] {
         &self.bytes[16..]
+    }
+}
+
+pub struct MessageSet {
+    bytes: Vec<u8>,
+    size: usize,
+}
+
+impl MessageSet {
+    pub fn new() -> MessageSet {
+        MessageSet {
+            bytes: Vec::new(),
+            size: 0,
+        }
+    }
+
+    /// Reads a single message.
+    fn read<R>(&mut self, reader: &mut R) -> Result<(), MessageError>
+        where R: Read
+    {
+        let mut offset_buf= vec![0; 8];
+        read_n!(reader, offset_buf, 8, "Unable to read offset");
+        let mut size_buf = vec![0; 4];
+        read_n!(reader, size_buf, 4, "Unable to read size");
+        let mut crc_buf = vec![0; 4];
+        read_n!(reader, crc_buf, 4, "Unable to read CRC");
+
+        let size = BigEndian::read_u32(&size_buf) as usize;
+        let crc = BigEndian::read_u32(&crc_buf);
+
+        let mut bytes = vec![0; size];
+        read_n!(reader, bytes, size, "Unable to read message payload");
+
+        let payload_crc = checksum_ieee(&bytes);
+        if payload_crc != crc {
+            return Err(MessageError::InvalidCRC);
+        }
+
+        self.bytes.extend(offset_buf);
+        self.bytes.extend(size_buf);
+        self.bytes.extend(crc_buf);
+        self.bytes.extend(bytes);
+        self.size += 1;
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    pub fn iter<'a>(&'a self) -> MessageIter<'a> {
+        MessageIter {
+            bytes: &self.bytes,
+            offset: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn copy_bytes(&self) -> Vec<u8> {
+        self.bytes.iter().cloned().collect()
+    }
+}
+
+pub struct MessageIter<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Iterator for MessageIter<'a> {
+    type Item = Message<'a>;
+
+    fn next(&mut self) -> Option<Message<'a>> {
+        if self.offset + 16 >= self.bytes.len() {
+            return None;
+        }
+
+        let off_slice = &self.bytes[self.offset..];
+        let size = BigEndian::read_u32(&off_slice[8..12]) as usize;
+        info!("Size {} bytes", size);
+        let message_slice = &off_slice[0..16+size];
+        self.offset += 16 + size;
+        Some(Message {
+            bytes: message_slice,
+        })
+    }
+}
+
+pub struct MessageBuf {
+    bytes: Vec<u8>,
+    size: usize,
+    byte_offsets: Vec<usize>,
+}
+
+impl MessageBuf {
+    pub fn new() -> MessageBuf {
+        MessageBuf {
+            bytes: Vec::new(),
+            size: 0,
+            byte_offsets: Vec::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    /// Adds a new message with a given payload and offset.
+    pub fn push(&mut self, payload: &[u8]) {
+        let start_len = self.bytes.len();
+
+        // blank offset, expect the log to set the offsets
+        let mut buf = vec![0; 8];
+        self.bytes.extend_from_slice(&buf);
+
+        BigEndian::write_u32(&mut buf[0..4], payload.len() as u32);
+        self.bytes.extend_from_slice(&buf[0..4]);
+
+        BigEndian::write_u32(&mut buf[0..4], checksum_ieee(payload));
+        self.bytes.extend_from_slice(&buf[0..4]);
+
+        self.bytes.extend_from_slice(payload);
+
+        self.size += 1;
+        self.byte_offsets.push(start_len);
+    }
+
+    fn set_offsets(&mut self, starting_offset: u64) {
+        for (i, pos) in self.byte_offsets.iter().enumerate() {
+            BigEndian::write_u64(&mut self.bytes[*pos..*pos+8], (i as u64) + starting_offset);
+        }
+    }
+
+    fn create_metadata(&self, starting_offset: u64, base_file_pos: u32) -> Vec<LogEntryMetadata> {
+        self.byte_offsets.iter().enumerate().map(move |(i, pos)| {
+            LogEntryMetadata {
+                offset: starting_offset + (i as u64),
+                file_pos: (*pos as u32) + base_file_pos,
+            }
+        }).collect()
+    }
+
+    #[cfg(test)]
+    pub fn into_msg_set(self) -> MessageSet {
+        MessageSet {
+            bytes: self.bytes,
+            size: self.size,
+        }
+    }
+}
+
+impl<'a> From<&'a [u8]> for MessageBuf {
+    fn from(s: &'a [u8]) -> MessageBuf {
+        let mut buf = MessageBuf::new();
+        buf.push(s);
+        buf
+    }
+}
+
+impl<'a> From<&'a str> for MessageBuf {
+    fn from(s: &'a str) -> MessageBuf {
+        let mut buf = MessageBuf::new();
+        buf.push(s.as_bytes());
+        buf
     }
 }
 
@@ -263,7 +381,7 @@ impl Segment {
         self.base_offset
     }
 
-    pub fn append(&mut self, payload: &[u8]) -> Result<LogEntryMetadata, SegmentAppendError> {
+    pub fn append(&mut self, payload: &mut MessageBuf) -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
         let (write_pos, off, max_bytes) = match self.mode {
             SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => {
                 (write_pos, next_offset, max_bytes)
@@ -271,9 +389,10 @@ impl Segment {
             _ => return Err(SegmentAppendError::LogFull),
         };
 
-        let msg = Message::new(payload, off);
+        payload.set_offsets(off);
+
         // ensure we have the capacity
-        if msg.bytes().len() + write_pos > max_bytes {
+        if payload.bytes.len() + write_pos > max_bytes {
             return Err(SegmentAppendError::LogFull);
         }
 
@@ -284,16 +403,13 @@ impl Segment {
             self.has_read = false;
         }
 
-        self.file.write_all(msg.bytes())?;
+        self.file.write_all(&payload.bytes)?;
         self.mode = SegmentMode::ReadWrite {
-            write_pos: write_pos + msg.bytes().len(),
+            write_pos: write_pos + payload.bytes.len(),
             next_offset: off + 1,
             max_bytes: max_bytes,
         };
-        Ok(LogEntryMetadata {
-            offset: off,
-            file_pos: write_pos as u32,
-        })
+        Ok(payload.create_metadata(off, write_pos as u32))
     }
 
     // TODO: async flush strategy
@@ -307,7 +423,7 @@ impl Segment {
         Ok(())
     }
 
-    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<Vec<Message>, MessageError> {
+    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<MessageSet, MessageError> {
         self.seek(file_pos)?;
 
         let mut buf_reader = match limit {
@@ -315,13 +431,11 @@ impl Segment {
             _ => BufReader::new(&mut self.file),
         };
 
-        let mut msgs = Vec::new();
+        let mut msgs = MessageSet::new();
 
         loop {
-            match Message::read(&mut buf_reader) {
-                Ok(msg) => {
-                    msgs.push(msg);
-
+            match msgs.read(&mut buf_reader) {
+                Ok(()) => {
                     match limit {
                         ReadLimit::Messages(l) if l <= msgs.len() => return Ok(msgs),
                         _ => {}
@@ -345,40 +459,57 @@ mod tests {
     use super::super::testutil::*;
     use std::io;
     use std::path::PathBuf;
+    use env_logger;
 
     #[test]
     fn message_construction() {
-        let msg = Message::new(b"123456789", 1234567u64);
-        assert_eq!(msg.offset(), 1234567u64);
-        assert_eq!(msg.payload(), b"123456789");
-        assert_eq!(msg.crc(), 0xcbf43926);
-        assert_eq!(msg.size(), 9u32);
+        env_logger::init().unwrap_or(());
+        //let msg = Message::new(b"123456789", 1234567u64);
+        let mut msg_buf = MessageBuf::new();
+        msg_buf.push(b"123456789");
+        let msg_set = msg_buf.into_msg_set();
+        let mut msg_it = msg_set.iter();
+        {
+            let msg = msg_it.next().unwrap();
+            assert_eq!(msg.payload(), b"123456789");
+            assert_eq!(msg.crc(), 0xcbf43926);
+            assert_eq!(msg.size(), 9u32);
+        }
+        assert!(msg_it.next().is_none());
     }
 
     #[test]
     fn message_read() {
-        let msg = Message::new(b"123456789", 1234567u64);
-        let mut buf_reader = io::BufReader::new(msg.bytes());
-        let read_msg_result = Message::read(&mut buf_reader);
+        let mut buf = MessageBuf::new();
+        buf.push(b"123456789");
+        let bytes = buf.into_msg_set().copy_bytes();
+
+        let mut buf_reader = io::BufReader::new(bytes.as_slice());
+
+        let mut reader = MessageSet::new();
+        let read_msg_result = reader.read(&mut buf_reader);
         assert!(read_msg_result.is_ok(), "result = {:?}", read_msg_result);
 
-        let read_msg = read_msg_result.unwrap();
-        assert_eq!(read_msg.offset(), 1234567u64);
+        let read_msg = reader.iter().next().unwrap();
         assert_eq!(read_msg.payload(), b"123456789");
         assert_eq!(read_msg.crc(), 0xcbf43926);
         assert_eq!(read_msg.size(), 9u32);
     }
 
+
     #[test]
     fn message_read_invalid_crc() {
-        let mut msg =
-            Message::new(b"123456789", 1234567u64).bytes().iter().cloned().collect::<Vec<u8>>();
+        let mut buf = MessageBuf::new();
+        buf.push(b"123456789");
+        let mut msg = buf.into_msg_set().copy_bytes();
         // mess with the payload such that the CRC does not match
         let last_ind = msg.len() - 1;
         msg[last_ind] += 1u8;
 
         let mut buf_reader = io::BufReader::new(msg.as_slice());
-        let read_msg_result = Message::read(&mut buf_reader);
+
+        let mut reader = MessageSet::new();
+        let read_msg_result = reader.read(&mut buf_reader);
         let matches_invalid_crc = match read_msg_result {
             Err(MessageError::InvalidCRC) => true,
             _ => false,
@@ -388,15 +519,18 @@ mod tests {
                 read_msg_result);
     }
 
+
     #[test]
     fn message_read_invalid_payload_length() {
-        let mut msg =
-            Message::new(b"123456789", 1234567u64).bytes().iter().cloned().collect::<Vec<u8>>();
+        let mut buf = MessageBuf::new();
+        buf.push(b"123456789");
+        let mut msg = buf.into_msg_set().copy_bytes();
         // pop the last byte
         msg.pop();
 
         let mut buf_reader = io::BufReader::new(msg.as_slice());
-        let read_msg_result = Message::read(&mut buf_reader);
+        let mut msg_reader = MessageSet::new();
+        let read_msg_result = msg_reader.read(&mut buf_reader);
         let matches_invalid_crc = match read_msg_result {
             Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => true,
             _ => false,
@@ -406,18 +540,39 @@ mod tests {
                 read_msg_result);
     }
 
+
     #[test]
-    pub fn log() {
+    pub fn log_append() {
         let path = TestDir::new();
         let mut f = Segment::new(path, 0, 1024).unwrap();
 
-        let p0 = f.append(b"12345").unwrap();
-        assert_eq!(p0.offset(), 0);
-        assert_eq!(p0.file_pos(), 0);
+        {
+            let mut buf = MessageBuf::new();
+            buf.push(b"12345");
+            let meta = f.append(&mut buf).unwrap();
 
-        let p1 = f.append(b"66666").unwrap();
-        assert_eq!(p1.offset(), 1);
-        assert_eq!(p1.file_pos(), 21);
+            assert_eq!(1, meta.len());
+            let p0 = meta.iter().next().unwrap();
+            assert_eq!(p0.offset(), 0);
+            assert_eq!(p0.file_pos(), 0);
+        }
+
+        {
+            let mut buf = MessageBuf::new();
+            buf.push(b"66666");
+            buf.push(b"77777");
+            let meta = f.append(&mut buf).unwrap();
+            assert_eq!(2, meta.len());
+
+            let mut it = meta.iter();
+            let p0 = it.next().unwrap();
+            assert_eq!(p0.offset(), 1);
+            assert_eq!(p0.file_pos(), 21);
+
+            let p1 = it.next().unwrap();
+            assert_eq!(p1.offset(), 2);
+            assert_eq!(p1.file_pos(), 42);
+        }
 
         f.flush_sync().unwrap();
     }
@@ -428,8 +583,10 @@ mod tests {
 
         {
             let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
-            f.append(b"12345").unwrap();
-            f.append(b"66666").unwrap();
+            let mut buf = MessageBuf::new();
+            buf.push(b"12345");
+            buf.push(b"66666");
+            f.append(&mut buf).unwrap();
             f.flush_sync().unwrap();
         }
 
@@ -448,20 +605,26 @@ mod tests {
         }
     }
 
+
     #[test]
     pub fn log_read() {
         let log_dir = TestDir::new();
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
-        let m0 = f.append(b"0123456789").unwrap();
-        f.append(b"aaaaaaaaaa").unwrap();
-        f.append(b"abc").unwrap();
+        {
+            let mut buf = MessageBuf::new();
+            buf.push(b"0123456789");
+            buf.push(b"aaaaaaaaaa");
+            buf.push(b"abc");
+            f.append(&mut buf).unwrap();
+        }
 
-        let msgs = f.read(m0.file_pos(), ReadLimit::Messages(10)).unwrap();
+        let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
         assert_eq!(3, msgs.len());
-        assert_eq!(0, msgs[0].offset());
-        assert_eq!(1, msgs[1].offset());
-        assert_eq!(2, msgs[2].offset());
+
+        for (i, m) in msgs.iter().enumerate() {
+            assert_eq!(i as u64, m.offset());
+        }
     }
 
     #[test]
@@ -469,39 +632,51 @@ mod tests {
         let log_dir = TestDir::new();
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
-        let m0 = f.append(b"0123456789").unwrap();
-        f.append(b"aaaaaaaaaa").unwrap();
-        f.append(b"abc").unwrap();
+        {
+            let mut buf = MessageBuf::new();
+            buf.push(b"0123456789");
+            buf.push(b"aaaaaaaaaa");
+            buf.push(b"abc");
+            f.append(&mut buf).unwrap();
+        }
 
-        let msgs = f.read(m0.file_pos(), ReadLimit::Messages(2)).unwrap();
+        let msgs = f.read(0, ReadLimit::Messages(2)).unwrap();
         assert_eq!(2, msgs.len());
     }
+
 
     #[test]
     pub fn log_read_with_size_limit() {
         let log_dir = TestDir::new();
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
-        let m0 = f.append(b"0123456789").unwrap();
-        let m1 = f.append(b"aaaaaaaaaa").unwrap();
-        f.append(b"abc").unwrap();
+        let meta = {
+            let mut buf = MessageBuf::new();
+            buf.push(b"0123456789");
+            buf.push(b"aaaaaaaaaa");
+            buf.push(b"abc");
+            f.append(&mut buf).unwrap()
+        };
 
         // byte max contains message 0, but not the entirety of message 1
-        let msgs = f.read(m0.file_pos(),
-                  ReadLimit::Bytes((m1.file_pos() + 1) as usize))
+        let msgs = f.read(0,
+                  ReadLimit::Bytes((meta[1].file_pos() + 1) as usize))
             .unwrap();
         assert_eq!(1, msgs.len());
     }
+
 
     #[bench]
     fn bench_segment_append(b: &mut Bencher) {
         let path = TestDir::new();
 
         let mut seg = Segment::new(path, 100u64, 100 * 1024 * 1024).unwrap();
-        let buf = b"01234567891011121314151617181920";
+        let payload = b"01234567891011121314151617181920";
 
         b.iter(|| {
-            seg.append(buf).unwrap();
+            let mut buf = MessageBuf::new();
+            buf.push(payload);
+            seg.append(&mut buf).unwrap();
         });
     }
 }
