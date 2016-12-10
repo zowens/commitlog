@@ -45,7 +45,6 @@ macro_rules! read_n {
 /// | 8-11      | Big Endian u32 | Payload Size |
 /// | 12-15     | Big Endian u32 | CRC32 (IEEE) |
 /// | 16+       |                | Payload      |
-///
 #[derive(Debug)]
 pub struct Message<'a> {
     bytes: &'a [u8],
