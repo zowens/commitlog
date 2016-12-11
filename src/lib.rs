@@ -70,6 +70,7 @@ use std::path::{Path, PathBuf};
 use std::fmt;
 use std::fs;
 use std::io;
+use std::iter::{DoubleEndedIterator, ExactSizeIterator};
 use std::mem::swap;
 use segment::{Segment, SegmentAppendError};
 use index::*;
@@ -93,18 +94,22 @@ impl fmt::Display for Offset {
 pub struct OffsetRange(u64, usize);
 
 impl OffsetRange {
+    /// Starting offset of the range.
     pub fn first(&self) -> Offset {
         Offset(self.0)
     }
 
+    /// Number of offsets within the range.
     pub fn len(&self) -> usize {
         self.1
     }
 
+    /// Iterator containing all offsets within the offset range.
     pub fn iter(&self) -> OffsetRangeIter {
         OffsetRangeIter {
             pos: self.0,
             end: self.0 + (self.1 as u64),
+            size: self.1,
         }
     }
 }
@@ -113,6 +118,7 @@ impl OffsetRange {
 pub struct OffsetRangeIter {
     pos: u64,
     end: u64,
+    size: usize,
 }
 
 impl Iterator for OffsetRangeIter {
@@ -123,6 +129,28 @@ impl Iterator for OffsetRangeIter {
         } else {
             let v = self.pos;
             self.pos += 1;
+            Some(Offset(v))
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.size))
+    }
+}
+
+impl ExactSizeIterator for OffsetRangeIter {
+    fn len(&self) -> usize {
+        self.size
+    }
+}
+
+impl DoubleEndedIterator for OffsetRangeIter {
+    fn next_back(&mut self) -> Option<Offset> {
+        if self.pos >= self.end {
+            None
+        } else {
+            let v = self.end -1;
+            self.end -= 1;
             Some(Offset(v))
         }
     }
