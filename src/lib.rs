@@ -530,6 +530,19 @@ mod tests {
     use env_logger;
 
     #[test]
+    pub fn offset_range() {
+        let range = OffsetRange(2, 6);
+
+        assert_eq!(
+            vec![2, 3, 4, 5, 6, 7],
+            range.iter().map(|o| o.0).collect::<Vec<u64>>());
+
+        assert_eq!(
+            vec![7, 6, 5, 4, 3, 2],
+            range.iter().rev().map(|o| o.0).collect::<Vec<u64>>());
+    }
+
+    #[test]
     pub fn append() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
