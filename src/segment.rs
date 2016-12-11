@@ -76,20 +76,41 @@ impl<'a> Message<'a> {
     }
 }
 
+
+/// Last position read from the log.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct LogPosition {
+    pub(super) segment: u64,
+    pub(super) pos: u32,
+}
+
+
 /// Readonly set of messages from the log.
 pub struct MessageSet {
     bytes: Vec<u8>,
     size: usize,
     last_off: Option<u64>,
+    next_position: Option<LogPosition>,
 }
 
 impl MessageSet {
-    /// Creates an empty MessageSet.
-    pub fn new() -> MessageSet {
+    /// Creates a new MessageSet from which messages can be read.
+    fn new() -> MessageSet {
         MessageSet {
             bytes: Vec::new(),
             size: 0,
             last_off: None,
+            next_position: None,
+        }
+    }
+
+    /// Creates an empty MessageSet.
+    pub fn empty() -> MessageSet {
+        MessageSet {
+            bytes: Vec::with_capacity(0),
+            size: 0,
+            last_off: None,
+            next_position: None,
         }
     }
 
@@ -136,6 +157,18 @@ impl MessageSet {
     /// Last offset in the MessageSet.
     pub fn last_offset(&self) -> Option<Offset> {
         self.last_off.map(Offset)
+    }
+
+    /// Next read position within the log.
+    pub fn next_read_position(&self) -> Option<LogPosition> {
+        self.next_position.clone()
+    }
+
+    fn set_next_read_position(&mut self, log_start: u64, starting_file_pos: u32) {
+        self.next_position = Some(LogPosition {
+            segment: log_start,
+            pos: starting_file_pos + self.bytes.len() as u32,
+        });
     }
 
     /// Message iterator.
@@ -245,6 +278,7 @@ impl MessageBuf {
             bytes: self.bytes,
             size: self.size,
             last_off: None,
+            next_position: None,
         }
     }
 }
@@ -276,7 +310,10 @@ enum SegmentMode {
         /// Maximum number of bytes permitted to be appended to the log
         max_bytes: usize,
     },
-    Read,
+    Read {
+        /// Cached size of the file
+        file_size: usize,
+    },
 }
 
 
@@ -387,9 +424,13 @@ impl Segment {
         };
 
 
+        let meta = seg_file.metadata()?;
+
         Ok(Segment {
             file: seg_file,
-            mode: SegmentMode::Read,
+            mode: SegmentMode::Read{
+                file_size: meta.len() as usize,
+            },
             has_read: false,
             base_offset: base_offset,
         })
@@ -399,6 +440,13 @@ impl Segment {
         match self.mode {
             SegmentMode::ReadWrite { next_offset, .. } => next_offset,
             _ => 0,
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self.mode {
+            SegmentMode::ReadWrite { write_pos, .. } => write_pos as usize,
+            SegmentMode::Read { file_size } => file_size,
         }
     }
 
@@ -464,17 +512,23 @@ impl Segment {
             match msgs.read(&mut buf_reader) {
                 Ok(()) => {
                     match limit {
-                        ReadLimit::Messages(l) if l <= msgs.len() => return Ok(msgs),
+                        ReadLimit::Messages(l) if l <= msgs.len() => {
+                            break;
+                        },
                         _ => {}
                     }
                 }
                 // EOF counts as an end to the stream, thus we're done fetching messages
                 Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    return Ok(msgs)
+                    break;
                 }
                 Err(e) => return Err(e),
             }
         }
+
+
+        msgs.set_next_read_position(self.base_offset, file_pos);
+        Ok(msgs)
     }
 }
 
@@ -493,6 +547,9 @@ mod tests {
         env_logger::init().unwrap_or(());
         let mut msg_buf = MessageBuf::new();
         msg_buf.push("123456789");
+        msg_buf.push("000000000");
+        msg_buf.set_offsets(100);
+
         let msg_set = msg_buf.into_msg_set();
         let mut msg_it = msg_set.iter();
         {
@@ -500,7 +557,16 @@ mod tests {
             assert_eq!(msg.payload(), b"123456789");
             assert_eq!(msg.crc(), 0xcbf43926);
             assert_eq!(msg.size(), 9u32);
+            assert_eq!(msg.offset().0, 100);
         }
+        {
+            let msg = msg_it.next().unwrap();
+            assert_eq!(msg.payload(), b"000000000");
+            assert_eq!(msg.crc(), 0x6d128616);
+            assert_eq!(msg.size(), 9u32);
+            assert_eq!(msg.offset().0, 101);
+        }
+
         assert!(msg_it.next().is_none());
     }
 
@@ -648,6 +714,14 @@ mod tests {
         let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
         assert_eq!(3, msgs.len());
 
+        {
+            let log_pos = msgs.next_read_position();
+            assert!(log_pos.is_some());
+            let log_pos = log_pos.unwrap();
+            assert_eq!(0, log_pos.segment);
+            assert_eq!(msgs.bytes.len() as u32, log_pos.pos);
+        }
+
         for (i, m) in msgs.iter().enumerate() {
             assert_eq!(i as u64, m.offset().0);
         }
@@ -668,6 +742,14 @@ mod tests {
 
         let msgs = f.read(0, ReadLimit::Messages(2)).unwrap();
         assert_eq!(2, msgs.len());
+
+        {
+            let log_pos = msgs.next_read_position();
+            assert!(log_pos.is_some());
+            let log_pos = log_pos.unwrap();
+            assert_eq!(0, log_pos.segment);
+            assert_eq!(msgs.bytes.len() as u32, log_pos.pos);
+        }
     }
 
 
@@ -690,6 +772,41 @@ mod tests {
         assert_eq!(1, msgs.len());
     }
 
+    #[test]
+    pub fn log_read_with_log_position() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        {
+            let mut buf = MessageBuf::new();
+            buf.push("0123456789");
+            buf.push("aaaaaaaaaa");
+            buf.push("abc");
+            f.append(&mut buf).unwrap();
+        }
+
+        // byte max contains message 0, but not the entirety of message 1
+        let mut file_pos = 0;
+        for i in 0..3 {
+            let msgs = f.read(file_pos, ReadLimit::Messages(1))
+                .unwrap();
+            assert_eq!(1, msgs.len());
+            assert_eq!(i, msgs.iter().next().unwrap().offset().0);
+
+            let next_pos = msgs.next_read_position();
+            assert!(next_pos.is_some());
+            file_pos = next_pos.unwrap().pos;
+        }
+
+        // last read should be empty
+        let msgs = f.read(file_pos, ReadLimit::Messages(1)).unwrap();
+        assert_eq!(0, msgs.len());
+
+        // next_pos should be the same as the input file pos
+        let next_pos = msgs.next_read_position();
+        assert!(next_pos.is_some());
+        assert_eq!(file_pos, next_pos.unwrap().pos);
+    }
 
     #[bench]
     fn bench_segment_append(b: &mut Bencher) {

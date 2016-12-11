@@ -52,7 +52,7 @@ fn main() {
                 if let ReadPosition::Offset(Offset(prev)) = pos {
                     assert!(prev < off.0);
                 }
-                pos = ReadPosition::Offset(Offset(off.0 + 1));
+                pos = ReadPosition::Position(entries.next_read_position().unwrap());
             }
             None => {
                 let end = SystemTime::now();
