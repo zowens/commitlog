@@ -70,6 +70,7 @@ use std::path::{Path, PathBuf};
 use std::fmt;
 use std::fs;
 use std::io;
+use std::error;
 use std::iter::{DoubleEndedIterator, ExactSizeIterator};
 use std::mem::swap;
 use segment::{Segment, SegmentAppendError};
@@ -178,6 +179,38 @@ impl From<io::Error> for AppendError {
     }
 }
 
+impl error::Error for AppendError {
+    fn description(&self) -> &str {
+        match *self {
+            AppendError::Io(_) => "File IO error occurred while appending to the log",
+            AppendError::FreshIndexNotWritable => {
+                "While attempting to create a new index, the new index was not writabe"
+            }
+            AppendError::FreshSegmentNotWritable => {
+                "While attempting to create a new segment, the new segment was not writabe"
+            }
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        match *self {
+            AppendError::Io(ref e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for AppendError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            AppendError::Io(_) => write!(f, "IO Error"),
+            AppendError::FreshIndexNotWritable => write!(f, "Fresh index error"),
+            AppendError::FreshSegmentNotWritable => write!(f, "Fresh segment error"),
+        }
+    }
+}
+
+
 /// Starting location of a read
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ReadPosition {
@@ -198,6 +231,33 @@ pub enum ReadError {
     CorruptLog,
     /// A Log position was supplied that is invalid.
     InvalidLogPosition,
+}
+
+impl error::Error for ReadError {
+    fn description(&self) -> &str {
+        match *self {
+            ReadError::Io(_) => "File IO error occurred while reading to the log",
+            ReadError::CorruptLog => "Corrupt log segment has been detected",
+            ReadError::InvalidLogPosition => "Log position is invalid",
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        match *self {
+            ReadError::Io(ref e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            ReadError::Io(_) => write!(f, "IO Error"),
+            ReadError::CorruptLog => write!(f, "Corrupt Log Error"),
+            ReadError::InvalidLogPosition => write!(f, "Invalid log position"),
+        }
+    }
 }
 
 impl From<io::Error> for ReadError {
@@ -267,6 +327,7 @@ pub struct CommitLog {
 }
 
 impl CommitLog {
+    /// Creates or opens an existing commit log.
     pub fn new(opts: LogOptions) -> io::Result<CommitLog> {
         fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
@@ -533,13 +594,11 @@ mod tests {
     pub fn offset_range() {
         let range = OffsetRange(2, 6);
 
-        assert_eq!(
-            vec![2, 3, 4, 5, 6, 7],
-            range.iter().map(|o| o.0).collect::<Vec<u64>>());
+        assert_eq!(vec![2, 3, 4, 5, 6, 7],
+                   range.iter().map(|o| o.0).collect::<Vec<u64>>());
 
-        assert_eq!(
-            vec![7, 6, 5, 4, 3, 2],
-            range.iter().rev().map(|o| o.0).collect::<Vec<u64>>());
+        assert_eq!(vec![7, 6, 5, 4, 3, 2],
+                   range.iter().rev().map(|o| o.0).collect::<Vec<u64>>());
     }
 
     #[test]
@@ -800,5 +859,4 @@ mod tests {
             assert_eq!(99, off);
         }
     }
-
 }
