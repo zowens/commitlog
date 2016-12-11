@@ -20,11 +20,7 @@ fn main() {
 
     let start = SystemTime::now();
     for i in 0..BATCHES {
-        let mut buf = MessageBuf::new();
-        for j in 0..BATCH_SIZE {
-            buf.push(format!("{}-{}", i, j));
-        }
-
+        let buf = (0..BATCH_SIZE).map(|j| format!("{}-{}", i, j)).collect::<MessageBuf>();
         log.append(buf).expect("Unable to append batch");
 
         if i == 99 || i == 50 {

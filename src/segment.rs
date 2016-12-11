@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
+use std::io::{self, Write, Read, BufReader, Seek, SeekFrom};
+use std::iter::{IntoIterator, FromIterator};
 use crc::crc32::checksum_ieee;
 use byteorder::{BigEndian, ByteOrder};
-use std::io::{self, Write, Read, BufReader, Seek, SeekFrom};
 use super::Offset;
 
 /// Number of bytes contained in the base name of the file.
@@ -295,6 +296,18 @@ impl<'a> From<&'a str> for MessageBuf {
     fn from(s: &'a str) -> MessageBuf {
         let mut buf = MessageBuf::new();
         buf.push(s.as_bytes());
+        buf
+    }
+}
+
+impl<R: AsRef<[u8]>> FromIterator<R> for MessageBuf {
+    fn from_iter<T>(iter: T) -> MessageBuf
+        where T: IntoIterator<Item = R>
+    {
+        let mut buf = MessageBuf::new();
+        for v in iter.into_iter() {
+            buf.push(v);
+        }
         buf
     }
 }
@@ -804,6 +817,12 @@ mod tests {
         let next_pos = msgs.next_read_position();
         assert!(next_pos.is_some());
         assert_eq!(file_pos, next_pos.unwrap().pos);
+    }
+
+    #[test]
+    pub fn messagebuf_fromiterator() {
+        let buf = vec!["test", "123"].iter().collect::<MessageBuf>();
+        assert_eq!(2, buf.len());
     }
 
     #[bench]
