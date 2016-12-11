@@ -149,7 +149,7 @@ impl DoubleEndedIterator for OffsetRangeIter {
         if self.pos >= self.end {
             None
         } else {
-            let v = self.end -1;
+            let v = self.end - 1;
             self.end -= 1;
             Some(Offset(v))
         }
@@ -342,7 +342,7 @@ impl CommitLog {
         Ok((segments, indexes))
     }
 
-    /// Appends a log entry to the commit log, returning the offset of the appended entry.
+    /// Appends a log entry to the commit log, returning the offsets appended.
     pub fn append<T: Into<MessageBuf>>(&mut self, payload: T) -> Result<OffsetRange, AppendError> {
         // first write to the current segment
         // TODO: deal with message size > max file bytes?
@@ -420,44 +420,56 @@ impl CommitLog {
 
     /// Reads a portion of the log, starting with the ReadPosition up to the limit.
     pub fn read(&mut self, start: ReadPosition, limit: ReadLimit) -> Result<MessageSet, ReadError> {
-        let start_off = match start {
-            ReadPosition::Beginning => 0,
-            ReadPosition::Offset(Offset(v)) => v,
-            // fast path: read directly from a position in the log
+        match start {
+            ReadPosition::Beginning => self.read_by_offset(0, limit),
+            ReadPosition::Offset(Offset(v)) => self.read_by_offset(v, limit),
             ReadPosition::Position(log_pos) => {
-                // read from the active segment, if the read position offset matches
-                if self.active_segment.starting_offset() == log_pos.segment {
-                    return Ok(self.active_segment.read(log_pos.pos, limit)?);
-                }
-
-                let mut seg_it = self.closed_segments
-                        .range_mut(Bound::Included(&log_pos.segment), Bound::Unbounded);
-
-                let mut seg = match seg_it.next() {
-                    Some(seg) => seg.1,
-                    None => return Err(ReadError::InvalidLogPosition),
-                };
-
-                // because the log segment read at the end of the file will
-                // return the file position of the byte index 1 past the last
-                // byte (i.e. the size), we need to use the next segment to
-                // read
-                if log_pos.pos >= seg.size() as u32 {
-                    match seg_it.next() {
-                        Some(seg) => {
-                            return Ok(seg.1.read(0, limit)?);
-                        },
-                        None => {
-                            return Ok(self.active_segment.read(0, limit)?);
-                        },
-                    }
-                } else {
-                    return Ok(seg.read(log_pos.pos, limit)?);
-                }
-
+                self.read_by_position(log_pos.segment, log_pos.pos, limit)
             }
+        }
+    }
+
+    fn read_by_position(&mut self,
+                        segment: u64,
+                        file_pos: u32,
+                        limit: ReadLimit)
+                        -> Result<MessageSet, ReadError> {
+        // read from the active segment, if the read position offset matches
+        if self.active_segment.starting_offset() == segment {
+            return Ok(self.active_segment.read(file_pos, limit)?);
+        }
+
+        let mut seg_it = self.closed_segments
+            .range_mut(Bound::Included(&segment), Bound::Unbounded);
+
+        let mut seg = match seg_it.next() {
+            Some(seg) => seg.1,
+            None => return Err(ReadError::InvalidLogPosition),
         };
 
+        // because the log segment read at the end of the file will
+        // return the file position of the byte index 1 past the last
+        // byte (i.e. the size), we need to use the next segment to
+        // read
+        if file_pos >= seg.size() as u32 {
+            match seg_it.next() {
+                Some(seg) => {
+                    return Ok(seg.1.read(0, limit)?);
+                }
+                None => {
+                    return Ok(self.active_segment.read(0, limit)?);
+                }
+            }
+        } else {
+            return Ok(seg.read(file_pos, limit)?);
+        }
+    }
+
+
+    fn read_by_offset(&mut self,
+                      start_off: u64,
+                      limit: ReadLimit)
+                      -> Result<MessageSet, ReadError> {
         // find the file position from the index
         let active_start_off = self.active_index.starting_offset();
         let index_entry_res = if start_off >= active_start_off {
@@ -713,7 +725,9 @@ mod tests {
 
             // expect to read from next log
             let old_index_read =
-                log.read(ReadPosition::Position(boundary_read.next_read_position().unwrap()), ReadLimit::Messages(5)).unwrap();
+                log.read(ReadPosition::Position(boundary_read.next_read_position().unwrap()),
+                          ReadLimit::Messages(5))
+                    .unwrap();
             assert_eq!(5, old_index_read.len());
             assert_eq!(vec![36, 37, 38, 39, 40],
                        old_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
@@ -730,7 +744,9 @@ mod tests {
 
             // expect to read from next log
             let active_seg_read =
-                log.read(ReadPosition::Position(boundary_read.next_read_position().unwrap()), ReadLimit::Messages(5)).unwrap();
+                log.read(ReadPosition::Position(boundary_read.next_read_position().unwrap()),
+                          ReadLimit::Messages(5))
+                    .unwrap();
             assert_eq!(5, active_seg_read.len());
             assert_eq!(vec![71, 72, 73, 74, 75],
                        active_seg_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());

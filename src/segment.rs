@@ -428,9 +428,7 @@ impl Segment {
 
         Ok(Segment {
             file: seg_file,
-            mode: SegmentMode::Read{
-                file_size: meta.len() as usize,
-            },
+            mode: SegmentMode::Read { file_size: meta.len() as usize },
             has_read: false,
             base_offset: base_offset,
         })
