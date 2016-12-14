@@ -118,8 +118,7 @@ impl Index {
         // read the metadata and truncate
         let meta = index_file.metadata()?;
         let len = meta.len();
-        if len > 0 {
-            // TODO: fix issue w/ new index does not have writes
+        if len == 0 {
             index_file.set_len(file_bytes as u64)?;
         }
 
