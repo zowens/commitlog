@@ -137,7 +137,7 @@ impl Index {
         where P: AsRef<Path>
     {
         let index_file = OpenOptions::new().read(true)
-            .write(false)
+            .write(true)
             .append(false)
             .open(&index_path)?;
 
@@ -182,6 +182,8 @@ impl Index {
         };
 
         // trim un-used entries by reducing mmap view and truncating file
+        //
+        // TODO: holes may happen to fresh index segment on log open (w/ no writes)
         if next_write_pos < mmap.len() {
             mmap.restrict(0, next_write_pos)?;
             if let Err(e) = index_file.set_len(next_write_pos as u64) {
