@@ -48,7 +48,7 @@
 
 #[macro_use]
 extern crate log;
-extern crate crc;
+extern crate seahash;
 extern crate memmap;
 extern crate byteorder;
 
@@ -270,7 +270,7 @@ impl From<segment::MessageError> for ReadError {
     fn from(e: segment::MessageError) -> ReadError {
         match e {
             segment::MessageError::IoError(e) => ReadError::Io(e),
-            segment::MessageError::InvalidCRC => ReadError::CorruptLog,
+            segment::MessageError::InvalidHash => ReadError::CorruptLog,
         }
     }
 }
@@ -707,7 +707,7 @@ mod tests {
         let mut log = CommitLog::new(opts).unwrap();
 
         for i in 0..100 {
-            let s = format!("some data {}", i);
+            let s = format!("-data {}", i);
             log.append(s.as_str()).unwrap();
         }
         log.flush().unwrap();
@@ -750,7 +750,7 @@ mod tests {
         let mut log = CommitLog::new(opts).unwrap();
 
         for i in 0..100 {
-            let s = format!("some data {}", i);
+            let s = format!("-data {}", i);
             log.append(s.as_str()).unwrap();
         }
         log.flush().unwrap();
