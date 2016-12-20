@@ -206,9 +206,10 @@ impl<'a> Iterator for MessageIter<'a> {
 
         let off_slice = &self.bytes[self.offset..];
         let size = BigEndian::read_u32(&off_slice[8..12]) as usize;
-        info!("Size {} bytes", size);
+        trace!("message iterator: size {} bytes", size);
         let message_slice = &off_slice[0..20 + size];
         self.offset += 20 + size;
+        trace!("message iterator: at offset {}", self.offset);
         Some(Message { bytes: message_slice })
     }
 }
