@@ -337,7 +337,6 @@ pub struct Segment {
     file: File,
 
     mode: SegmentMode,
-    has_read: bool,
 
     /// Base offset of the log
     base_offset: u64,
@@ -412,8 +411,6 @@ impl Segment {
                 next_offset: base_offset,
                 max_bytes: max_bytes,
             },
-            has_read: false,
-
             base_offset: base_offset,
         })
     }
@@ -442,7 +439,6 @@ impl Segment {
         Ok(Segment {
             file: seg_file,
             mode: SegmentMode::Read { file_size: meta.len() as usize },
-            has_read: false,
             base_offset: base_offset,
         })
     }
@@ -483,13 +479,6 @@ impl Segment {
             return Err(SegmentAppendError::LogFull);
         }
 
-        // move cursor back to write position if we have moved the
-        // cursor due to a read
-        if self.has_read {
-            self.file.seek(SeekFrom::Start(write_pos as u64))?;
-            self.has_read = false;
-        }
-
         self.file.write_all(&payload.bytes)?;
         self.mode = SegmentMode::ReadWrite {
             write_pos: write_pos + payload.bytes.len(),
@@ -503,14 +492,8 @@ impl Segment {
         self.file.flush()
     }
 
-    fn seek(&mut self, file_pos: u32) -> io::Result<()> {
-        self.has_read = true;
-        self.file.seek(SeekFrom::Start(file_pos as u64))?;
-        Ok(())
-    }
-
     pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<MessageSet, MessageError> {
-        self.seek(file_pos)?;
+        self.file.seek(SeekFrom::Start(file_pos as u64))?;
 
         let mut buf_reader = match limit {
             ReadLimit::Bytes(n) => BufReader::with_capacity(n, &mut self.file),
@@ -817,6 +800,45 @@ mod tests {
         let next_pos = msgs.next_read_position();
         assert!(next_pos.is_some());
         assert_eq!(file_pos, next_pos.unwrap().pos);
+    }
+
+    #[test]
+    pub fn log_read_from_write() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        {
+            let mut buf = MessageBuf::new();
+            buf.push("0123456789");
+            buf.push("aaaaaaaaaa");
+            buf.push("abc");
+            f.append(&mut buf).unwrap();
+        }
+
+        let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
+        assert_eq!(3, msgs.len());
+
+        {
+            let mut buf = MessageBuf::new();
+            buf.push("foo");
+            f.append(&mut buf).unwrap();
+        }
+
+        let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
+        assert_eq!(4, msgs.len());
+
+        {
+            let log_pos = msgs.next_read_position();
+            assert!(log_pos.is_some());
+            let log_pos = log_pos.unwrap();
+            assert_eq!(0, log_pos.segment);
+            assert_eq!(msgs.bytes.len() as u32, log_pos.pos);
+        }
+
+
+        for (i, m) in msgs.iter().enumerate() {
+            assert_eq!(i as u64, m.offset().0);
+        }
     }
 
     #[test]
