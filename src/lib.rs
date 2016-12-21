@@ -338,14 +338,9 @@ impl CommitLog {
         // try to reuse the last segment if it is not full. otherwise, open a new index
         // at the correct offset
         let (ind, next_offset) = {
-            let last_ind = closed_indexes.values().next_back()
-                .and_then(|ind| {
-                    if ind.can_write() {
-                        Some(ind)
-                    } else {
-                        None
-                    }
-                })
+            let last_ind = closed_indexes.values()
+                .next_back()
+                .and_then(|ind| { if ind.can_write() { Some(ind) } else { None } })
                 .map(|ind| ind.starting_offset());
             match last_ind {
                 Some(starting_off) => {
@@ -356,9 +351,10 @@ impl CommitLog {
                         .map(|e| e.offset() + 1)
                         .unwrap_or(starting_off);
                     (ind, next_off)
-                },
+                }
                 None => {
-                    let next_off = closed_indexes.values().next_back()
+                    let next_off = closed_indexes.values()
+                        .next_back()
                         .map(|ind| {
                             let last_entry = ind.last_entry();
                             assert!(last_entry.is_some());
@@ -421,7 +417,7 @@ impl CommitLog {
                         Ok(mut ind) => {
                             ind.set_readonly()?;
                             ind
-                        },
+                        }
                         Err(e) => {
                             error!("Unable to open index {:?}: {}", f.path(), e);
                             return Err(e);

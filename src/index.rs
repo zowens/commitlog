@@ -535,7 +535,7 @@ mod tests {
             assert_eq!(1, last_entry.relative_offset());
             assert_eq!(2, last_entry.file_position());
 
-            //assert_eq!(16, index.size());
+            // assert_eq!(16, index.size());
             assert!(index.can_write());
         }
     }
