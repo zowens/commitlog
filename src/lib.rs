@@ -333,19 +333,52 @@ impl CommitLog {
 
         info!("Opening log in directory {:?}", &opts.log_dir.to_str());
 
-        let (closed_segments, closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
+        let (closed_segments, mut closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
 
-        // open new segment and index starting at the last index we wrote to + 1
-        let next_offset = closed_indexes.values()
-            .next_back()
-            .and_then(|ind| ind.last_entry())
-            .map(|e| e.offset() + 1)
-            .unwrap_or(0u64);
+        // try to reuse the last segment if it is not full. otherwise, open a new index
+        // at the correct offset
+        let (ind, next_offset) = {
+            let last_ind = closed_indexes.values().next_back()
+                .and_then(|ind| {
+                    if ind.can_write() {
+                        Some(ind)
+                    } else {
+                        None
+                    }
+                })
+                .map(|ind| ind.starting_offset());
+            match last_ind {
+                Some(starting_off) => {
+                    info!("Reusing index starting at offset {}", starting_off);
+                    // invariant: index exists in the closed_indexes BTree
+                    let ind = closed_indexes.remove(&starting_off).unwrap();
+                    let next_off = ind.last_entry()
+                        .map(|e| e.offset() + 1)
+                        .unwrap_or(starting_off);
+                    (ind, next_off)
+                },
+                None => {
+                    let next_off = closed_indexes.values().next_back()
+                        .map(|ind| {
+                            let last_entry = ind.last_entry();
+                            assert!(last_entry.is_some());
+                            last_entry.unwrap().offset() + 1
+                        })
+                        .unwrap_or(0u64);
+                    info!("Starting new index at offset {}", next_off);
+                    let ind = Index::new(&opts.log_dir, next_off, opts.index_max_bytes)?;
+                    (ind, next_off)
+                }
+            }
+        };
 
-        info!("Starting fresh segment and index at offset {}", next_offset);
+        // mark all closed indexes as readonly (indexes are not opened as readonly)
+        for ind in closed_indexes.values_mut() {
+            ind.set_readonly()?;
+        }
 
+        info!("Starting fresh segment {}", next_offset);
         let seg = Segment::new(&opts.log_dir, next_offset, opts.log_max_bytes)?;
-        let ind = Index::new(&opts.log_dir, next_offset, opts.index_max_bytes)?;
 
         Ok(CommitLog {
             closed_segments: closed_segments,
@@ -385,7 +418,10 @@ impl CommitLog {
                 }
                 Some(ext) if index::INDEX_FILE_NAME_EXTENSION.eq(ext) => {
                     let index = match Index::open(f.path()) {
-                        Ok(ind) => ind,
+                        Ok(mut ind) => {
+                            ind.set_readonly()?;
+                            ind
+                        },
                         Err(e) => {
                             error!("Unable to open index {:?}: {}", f.path(), e);
                             return Err(e);

@@ -13,6 +13,7 @@ pub static INDEX_FILE_NAME_LEN: usize = 20;
 /// File extension for the index file.
 pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
+#[inline]
 fn binary_search<F>(index: &[u8], f: F) -> usize
     where F: Fn(usize, u32) -> Ordering
 {
@@ -138,7 +139,7 @@ impl Index {
     {
         let index_file = OpenOptions::new().read(true)
             .write(true)
-            .append(false)
+            .append(true)
             .open(&index_path)?;
 
 
@@ -151,7 +152,7 @@ impl Index {
             }
         };
 
-        let mut mmap = Mmap::open(&index_file, Protection::Read)?.into_view();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view();
 
         let next_write_pos = unsafe {
             let index = mmap.as_slice();
@@ -181,18 +182,6 @@ impl Index {
             }
         };
 
-        // trim un-used entries by reducing mmap view and truncating file
-        //
-        // TODO: holes may happen to fresh index segment on log open (w/ no writes)
-        if next_write_pos < mmap.len() {
-            mmap.restrict(0, next_write_pos)?;
-            if let Err(e) = index_file.set_len(next_write_pos as u64) {
-                warn!("Unable to truncate index file {} to proper length: {:?}",
-                      filename,
-                      e);
-            }
-        }
-
         info!("Opening index {}, next write pos {}",
               filename,
               next_write_pos);
@@ -200,7 +189,7 @@ impl Index {
         Ok(Index {
             file: index_file,
             mmap: mmap,
-            mode: AccessMode::Read,
+            mode: AccessMode::ReadWrite,
             next_write_pos: next_write_pos,
             base_offset: base_offset,
         })
@@ -251,6 +240,18 @@ impl Index {
     pub fn set_readonly(&mut self) -> io::Result<()> {
         if self.mode != AccessMode::Read {
             self.mode = AccessMode::Read;
+
+            // trim un-used entries by reducing mmap view and truncating file
+            if self.next_write_pos < self.mmap.len() {
+                self.mmap.restrict(0, self.next_write_pos)?;
+                if let Err(e) = self.file.set_len(self.next_write_pos as u64) {
+                    warn!("Unable to truncate index file {:020}.{} to proper length: {:?}",
+                          self.base_offset,
+                          INDEX_FILE_NAME_EXTENSION,
+                          e);
+                }
+            }
+
             self.flush_sync()
         } else {
             Ok(())
@@ -534,7 +535,8 @@ mod tests {
             assert_eq!(1, last_entry.relative_offset());
             assert_eq!(2, last_entry.file_position());
 
-            assert_eq!(16, index.size());
+            //assert_eq!(16, index.size());
+            assert!(index.can_write());
         }
     }
 
@@ -554,6 +556,7 @@ mod tests {
             index_path.push(&dir);
             index_path.push("00000000000000000010.index");
             let index = Index::open(&index_path).unwrap();
+            assert!(!index.can_write());
 
             let e0 = index.find(10);
             assert!(e0.is_some());
