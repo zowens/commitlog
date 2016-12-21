@@ -340,8 +340,13 @@ impl CommitLog {
         let (ind, next_offset) = {
             let last_ind = closed_indexes.values()
                 .next_back()
-                .and_then(|ind| { if ind.can_write() { Some(ind) } else { None } })
-                .map(|ind| ind.starting_offset());
+                .and_then(|ind| {
+                    if ind.can_write() {
+                        Some(ind.starting_offset())
+                    } else {
+                        None
+                    }
+                });
             match last_ind {
                 Some(starting_off) => {
                     info!("Reusing index starting at offset {}", starting_off);
@@ -414,10 +419,7 @@ impl CommitLog {
                 }
                 Some(ext) if index::INDEX_FILE_NAME_EXTENSION.eq(ext) => {
                     let index = match Index::open(f.path()) {
-                        Ok(mut ind) => {
-                            ind.set_readonly()?;
-                            ind
-                        }
+                        Ok(ind) => ind,
                         Err(e) => {
                             error!("Unable to open index {:?}: {}", f.path(), e);
                             return Err(e);
