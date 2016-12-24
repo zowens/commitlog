@@ -513,6 +513,16 @@ impl CommitLog {
         }
     }
 
+    /// Gets the last written offset.
+    pub fn last_offset(&self) -> Option<Offset> {
+        let next_off = self.active_segment.next_offset();
+        if next_off == 0 {
+            None
+        } else {
+            Some(Offset(next_off - 1))
+        }
+    }
+
     /// Reads a portion of the log, starting with the ReadPosition up to the limit.
     pub fn read(&mut self, start: ReadPosition, limit: ReadLimit) -> Result<MessageSet, ReadError> {
         match start {
