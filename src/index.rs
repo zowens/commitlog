@@ -1,5 +1,5 @@
 use byteorder::{BigEndian, ByteOrder};
-use memmap::{Mmap, MmapView, Protection};
+use memmap::{Mmap, MmapViewSync, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use std::fs::{OpenOptions, File};
@@ -48,7 +48,7 @@ fn binary_search<F>(index: &[u8], f: F) -> usize
 /// of messages at the relative offset messages. The index is Memory Mapped.
 pub struct Index {
     file: File,
-    mmap: MmapView,
+    mmap: MmapViewSync,
     mode: AccessMode,
 
     /// next starting byte in index file offset to write
@@ -123,7 +123,7 @@ impl Index {
             index_file.set_len(file_bytes as u64)?;
         }
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
 
         Ok(Index {
             file: index_file,
@@ -152,7 +152,7 @@ impl Index {
             }
         };
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
 
         let next_write_pos = unsafe {
             let index = mmap.as_slice();
