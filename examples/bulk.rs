@@ -20,8 +20,8 @@ fn main() {
 
     let start = SystemTime::now();
     for i in 0..BATCHES {
-        let buf = (0..BATCH_SIZE).map(|j| format!("{}-{}", i, j)).collect::<MessageBuf>();
-        log.append(buf).expect("Unable to append batch");
+        let mut buf = (0..BATCH_SIZE).map(|j| format!("{}-{}", i, j)).collect::<MessageBuf>();
+        log.append(&mut buf).expect("Unable to append batch");
 
         if i == 99 || i == 50 {
             log.flush().expect("Unable to flush");

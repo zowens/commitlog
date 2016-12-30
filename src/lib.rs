@@ -26,8 +26,8 @@
 //!     let mut log = CommitLog::new(opts).unwrap();
 //!
 //!     // append to the log
-//!     log.append("hello world").unwrap(); // offset 0
-//!     log.append("second message").unwrap(); // offset 1
+//!     log.append_msg("hello world").unwrap(); // offset 0
+//!     log.append_msg("second message").unwrap(); // offset 1
 //!
 //!     // read the messages
 //!     let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
@@ -437,13 +437,20 @@ impl CommitLog {
         Ok((segments, indexes))
     }
 
-    /// Appends a log entry to the commit log, returning the offsets appended.
-    pub fn append<T: Into<MessageBuf>>(&mut self, payload: T) -> Result<OffsetRange, AppendError> {
+    /// Appends a single message to the log, returning the offset appended.
+    pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
+        let mut buf = MessageBuf::new();
+        buf.push(payload);
+        let res = try!(self.append(&mut buf));
+        assert!(res.len() == 1);
+        Ok(res.first())
+    }
+
+    /// Appends log entrites to the commit log, returning the offsets appended.
+    pub fn append(&mut self, buf: &mut MessageBuf) -> Result<OffsetRange, AppendError> {
         // first write to the current segment
         // TODO: deal with message size > max file bytes?
-        let mut buf = payload.into();
-        let entries = self.active_segment
-            .append(&mut buf)
+        let entries = self.active_segment.append(buf)
             .or_else(|e| {
                 match e {
                     // if the log is full, gracefully close the current segment
@@ -468,7 +475,7 @@ impl CommitLog {
 
                         // try again, giving up if we have to
                         self.active_segment
-                            .append(&mut buf)
+                            .append(buf)
                             .map_err(|_| AppendError::FreshSegmentNotWritable)
                     }
                     SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
@@ -649,10 +656,10 @@ mod tests {
     pub fn append() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
-        assert_eq!(log.append("123456").unwrap().first(), Offset(0));
-        assert_eq!(log.append("abcdefg").unwrap().first(), Offset(1));
-        assert_eq!(log.append("foobarbaz").unwrap().first(), Offset(2));
-        assert_eq!(log.append("bing").unwrap().first(), Offset(3));
+        assert_eq!(log.append_msg("123456").unwrap(), Offset(0));
+        assert_eq!(log.append_msg("abcdefg").unwrap(), Offset(1));
+        assert_eq!(log.append_msg("foobarbaz").unwrap(), Offset(2));
+        assert_eq!(log.append_msg("bing").unwrap(), Offset(3));
         log.flush().unwrap();
     }
 
@@ -660,14 +667,14 @@ mod tests {
     pub fn append_multiple() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
-        let buf = {
+        let mut buf = {
             let mut buf = MessageBuf::new();
             buf.push(b"123456");
             buf.push(b"789012");
             buf.push(b"345678");
             buf
         };
-        let range = log.append(buf).unwrap();
+        let range = log.append(&mut buf).unwrap();
         assert_eq!(0, range.first().0);
         assert_eq!(3, range.len());
         assert_eq!(vec![0, 1, 2],
@@ -684,11 +691,11 @@ mod tests {
         {
             let mut log = CommitLog::new(opts).unwrap();
             // first 2 entries fit (both 26 bytes with encoding)
-            log.append("0123456789").unwrap();
-            log.append("0123456789").unwrap();
+            log.append_msg("0123456789").unwrap();
+            log.append_msg("0123456789").unwrap();
 
             // this one should roll the log
-            log.append("0123456789").unwrap();
+            log.append_msg("0123456789").unwrap();
             log.flush().unwrap();
         }
 
@@ -716,11 +723,11 @@ mod tests {
         {
             let mut log = CommitLog::new(opts).unwrap();
             // first 2 entries fit
-            log.append("0123456789").unwrap();
-            log.append("0123456789").unwrap();
+            log.append_msg("0123456789").unwrap();
+            log.append_msg("0123456789").unwrap();
 
             // this one should roll the index, but not the segment
-            log.append("0123456789").unwrap();
+            log.append_msg("0123456789").unwrap();
             log.flush().unwrap();
         }
 
@@ -752,7 +759,7 @@ mod tests {
 
         for i in 0..100 {
             let s = format!("-data {}", i);
-            log.append(s.as_str()).unwrap();
+            log.append_msg(s.as_str()).unwrap();
         }
         log.flush().unwrap();
 
@@ -795,7 +802,7 @@ mod tests {
 
         for i in 0..100 {
             let s = format!("-data {}", i);
-            log.append(s.as_str()).unwrap();
+            log.append_msg(s.as_str()).unwrap();
         }
         log.flush().unwrap();
 
@@ -883,7 +890,7 @@ mod tests {
 
             for i in 0..99 {
                 let s = format!("some data {}", i);
-                let Offset(off) = log.append(s.as_str()).unwrap().first();
+                let Offset(off) = log.append_msg(s.as_str()).unwrap();
                 assert_eq!(i, off);
             }
             log.flush().unwrap();
@@ -899,7 +906,7 @@ mod tests {
             assert_eq!(vec![82, 83, 84, 85, 86],
                        active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
 
-            let Offset(off) = log.append("moar data").unwrap().first();
+            let Offset(off) = log.append_msg("moar data").unwrap();
             assert_eq!(99, off);
         }
     }

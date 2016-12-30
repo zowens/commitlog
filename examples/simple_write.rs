@@ -13,8 +13,8 @@ fn main() {
     let mut log = CommitLog::new(opts).unwrap();
 
     // append to the log
-    log.append("hello world").unwrap(); // offset 0
-    log.append("second message").unwrap(); // offset 1
+    log.append_msg("hello world").unwrap(); // offset 0
+    log.append_msg("second message").unwrap(); // offset 1
 
     // read the messages
     let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();

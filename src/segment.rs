@@ -183,11 +183,6 @@ impl MessageSet {
             offset: 0,
         }
     }
-
-    #[cfg(test)]
-    pub fn copy_bytes(&self) -> Vec<u8> {
-        self.bytes.iter().cloned().collect()
-    }
 }
 
 /// Iterator for Message within a MessageSet.
@@ -237,6 +232,13 @@ impl MessageBuf {
         self.size
     }
 
+    /// Clears the message buffer.
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.byte_offsets.clear();
+        self.size = 0;
+    }
+
     /// Adds a new message with a given payload.
     pub fn push<B: AsRef<[u8]>>(&mut self, payload: B) {
         let payload_slice = payload.as_ref();
@@ -258,6 +260,14 @@ impl MessageBuf {
         self.byte_offsets.push(start_len);
     }
 
+    /// Iterates over the messages added to the buffer.
+    pub fn iter<'a>(&'a self) -> MessageIter<'a> {
+        MessageIter {
+            bytes: &self.bytes,
+            offset: 0,
+        }
+    }
+
     fn set_offsets(&mut self, starting_offset: u64) {
         for (i, pos) in self.byte_offsets.iter().enumerate() {
             BigEndian::write_u64(&mut self.bytes[*pos..*pos + 8],
@@ -276,32 +286,6 @@ impl MessageBuf {
                 }
             })
             .collect()
-    }
-
-    #[cfg(test)]
-    pub fn into_msg_set(self) -> MessageSet {
-        MessageSet {
-            bytes: self.bytes,
-            size: self.size,
-            last_off: None,
-            next_position: None,
-        }
-    }
-}
-
-impl<'a> From<&'a [u8]> for MessageBuf {
-    fn from(s: &'a [u8]) -> MessageBuf {
-        let mut buf = MessageBuf::new();
-        buf.push(s);
-        buf
-    }
-}
-
-impl<'a> From<&'a str> for MessageBuf {
-    fn from(s: &'a str) -> MessageBuf {
-        let mut buf = MessageBuf::new();
-        buf.push(s.as_bytes());
-        buf
     }
 }
 
@@ -549,8 +533,7 @@ mod tests {
         msg_buf.push("000000000");
         msg_buf.set_offsets(100);
 
-        let msg_set = msg_buf.into_msg_set();
-        let mut msg_it = msg_set.iter();
+        let mut msg_it = msg_buf.iter();
         {
             let msg = msg_it.next().unwrap();
             assert_eq!(msg.payload(), b"123456789");
@@ -573,7 +556,7 @@ mod tests {
     fn message_read() {
         let mut buf = MessageBuf::new();
         buf.push("123456789");
-        let bytes = buf.into_msg_set().copy_bytes();
+        let bytes = buf.bytes;
 
         let mut buf_reader = io::BufReader::new(bytes.as_slice());
 
@@ -593,7 +576,7 @@ mod tests {
     fn message_read_invalid_hash() {
         let mut buf = MessageBuf::new();
         buf.push("123456789");
-        let mut msg = buf.into_msg_set().copy_bytes();
+        let mut msg = buf.bytes;
         // mess with the payload such that the hash does not match
         let last_ind = msg.len() - 1;
         msg[last_ind] += 1u8;
@@ -616,7 +599,7 @@ mod tests {
     fn message_read_invalid_payload_length() {
         let mut buf = MessageBuf::new();
         buf.push("123456789");
-        let mut msg = buf.into_msg_set().copy_bytes();
+        let mut msg = buf.bytes;
         // pop the last byte
         msg.pop();
 
