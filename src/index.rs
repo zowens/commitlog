@@ -1,4 +1,4 @@
-use byteorder::{BigEndian, ByteOrder};
+use byteorder::{LittleEndian, ByteOrder};
 use memmap::{Mmap, MmapViewSync, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
@@ -28,7 +28,7 @@ fn binary_search<F>(index: &[u8], f: F) -> usize
 
         // read the relative offset at the midpoint
         let mi = m * INDEX_ENTRY_BYTES;
-        let rel_off = BigEndian::read_u32(&index[mi..mi + 4]);
+        let rel_off = LittleEndian::read_u32(&index[mi..mi + 4]);
 
         match f(m, rel_off) {
             Ordering::Equal => return m,
@@ -160,7 +160,7 @@ impl Index {
 
             // check if this is a full or partial index
             let last_rel_ind_start = index.len() - INDEX_ENTRY_BYTES;
-            let last_val = BigEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
+            let last_val = LittleEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
                 INDEX_ENTRY_BYTES *
@@ -228,8 +228,8 @@ impl Index {
             let offset = (abs_offset - self.base_offset) as u32;
             let buf_pos = self.next_write_pos;
 
-            BigEndian::write_u32(&mut mem_slice[buf_pos..buf_pos + 4], offset);
-            BigEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
+            LittleEndian::write_u32(&mut mem_slice[buf_pos..buf_pos + 4], offset);
+            LittleEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
 
             self.next_write_pos += 8;
 
@@ -275,11 +275,11 @@ impl Index {
         unsafe {
             let mem_slice = self.mmap.as_slice();
             let start = i * 8;
-            let offset = BigEndian::read_u32(&mem_slice[start..start + 4]);
+            let offset = LittleEndian::read_u32(&mem_slice[start..start + 4]);
             if offset == 0 && i > 0 {
                 None
             } else {
-                let pos = BigEndian::read_u32(&mem_slice[start + 4..start + 8]);
+                let pos = LittleEndian::read_u32(&mem_slice[start + 4..start + 8]);
                 Some(IndexEntry {
                     rel_offset: offset,
                     base_offset: self.base_offset,
@@ -313,8 +313,8 @@ impl Index {
 
             if i < self.next_write_pos / INDEX_ENTRY_BYTES {
                 let entry_start = i * INDEX_ENTRY_BYTES;
-                let rel_offset_val = BigEndian::read_u32(&mem_slice[entry_start..entry_start + 4]);
-                let file_pos_val = BigEndian::read_u32(&mem_slice[entry_start + 4..entry_start +
+                let rel_offset_val = LittleEndian::read_u32(&mem_slice[entry_start..entry_start + 4]);
+                let file_pos_val = LittleEndian::read_u32(&mem_slice[entry_start + 4..entry_start +
                                                                                    8]);
 
                 // ignore if the offset is < desired (does not exist in this index)

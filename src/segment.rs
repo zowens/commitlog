@@ -3,7 +3,7 @@ use std::fs::{OpenOptions, File};
 use std::io::{self, Write, Read, BufReader, Seek, SeekFrom};
 use std::iter::{IntoIterator, FromIterator};
 use seahash;
-use byteorder::{BigEndian, ByteOrder};
+use byteorder::{LittleEndian, ByteOrder};
 use super::Offset;
 
 /// Number of bytes contained in the base name of the file.
@@ -40,12 +40,12 @@ macro_rules! read_n {
 /// Messages contain finite-sized binary values with an offset from
 /// the beginning of the log.
 ///
-/// | Bytes     | Encoding       | Value        |
-/// | --------- | -------------- | ------------ |
-/// | 0-7       | Big Endian u64 | Offset       |
-/// | 8-11      | Big Endian u32 | Payload Size |
-/// | 12-19     | Big Endian u64 | SeaHash      |
-/// | 20+       |                | Payload      |
+/// | Bytes     | Encoding          | Value        |
+/// | --------- | ----------------- | ------------ |
+/// | 0-7       | Little Endian u64 | Offset       |
+/// | 8-11      | Little Endian u32 | Payload Size |
+/// | 12-19     | Little Endian u64 | SeaHash      |
+/// | 20+       |                   | Payload      |
 ///
 /// Seahash is chosen because of its performance and quality. It is seeded
 /// with the following constants:
@@ -59,19 +59,19 @@ impl<'a> Message<'a> {
     /// Seahash of the payload.
     #[inline]
     pub fn hash(&self) -> u64 {
-        BigEndian::read_u64(&self.bytes[12..20])
+        LittleEndian::read_u64(&self.bytes[12..20])
     }
 
     /// Size of the payload.
     #[inline]
     pub fn size(&self) -> u32 {
-        BigEndian::read_u32(&self.bytes[8..12])
+        LittleEndian::read_u32(&self.bytes[8..12])
     }
 
     /// Offset of the message in the log.
     #[inline]
     pub fn offset(&self) -> Offset {
-        Offset(BigEndian::read_u64(&self.bytes[0..8]))
+        Offset(LittleEndian::read_u64(&self.bytes[0..8]))
     }
 
     /// Payload of the message.
@@ -130,9 +130,9 @@ impl MessageSet {
         let mut hash_buf = vec![0; 8];
         read_n!(reader, hash_buf, 8, "Unable to read hash");
 
-        let off = BigEndian::read_u64(&offset_buf);
-        let size = BigEndian::read_u32(&size_buf) as usize;
-        let hash = BigEndian::read_u64(&hash_buf);
+        let off = LittleEndian::read_u64(&offset_buf);
+        let size = LittleEndian::read_u32(&size_buf) as usize;
+        let hash = LittleEndian::read_u64(&hash_buf);
 
         let mut bytes = vec![0; size];
         read_n!(reader, bytes, size, "Unable to read message payload");
@@ -200,7 +200,7 @@ impl<'a> Iterator for MessageIter<'a> {
         }
 
         let off_slice = &self.bytes[self.offset..];
-        let size = BigEndian::read_u32(&off_slice[8..12]) as usize;
+        let size = LittleEndian::read_u32(&off_slice[8..12]) as usize;
         trace!("message iterator: size {} bytes", size);
         let message_slice = &off_slice[0..20 + size];
         self.offset += 20 + size;
@@ -248,10 +248,10 @@ impl MessageBuf {
         let mut buf = vec![0; 8];
         self.bytes.extend_from_slice(&buf);
 
-        BigEndian::write_u32(&mut buf[0..4], payload_slice.len() as u32);
+        LittleEndian::write_u32(&mut buf[0..4], payload_slice.len() as u32);
         self.bytes.extend_from_slice(&buf[0..4]);
 
-        BigEndian::write_u64(&mut buf, seahash::hash(payload_slice));
+        LittleEndian::write_u64(&mut buf, seahash::hash(payload_slice));
         self.bytes.extend_from_slice(&buf);
 
         self.bytes.extend_from_slice(payload_slice);
@@ -270,7 +270,7 @@ impl MessageBuf {
 
     fn set_offsets(&mut self, starting_offset: u64) {
         for (i, pos) in self.byte_offsets.iter().enumerate() {
-            BigEndian::write_u64(&mut self.bytes[*pos..*pos + 8],
+            LittleEndian::write_u64(&mut self.bytes[*pos..*pos + 8],
                                  (i as u64) + starting_offset);
         }
     }
