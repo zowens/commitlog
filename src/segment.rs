@@ -79,8 +79,28 @@ impl<'a> Message<'a> {
     pub fn payload(&self) -> &[u8] {
         &self.bytes[20..]
     }
-}
 
+    /// Serializes a new message into a buffer
+    pub fn serialize<B: AsRef<[u8]>>(bytes: &mut Vec<u8>, offset: u64, payload: B) {
+        let payload_slice = payload.as_ref();
+
+        // offset
+        let mut buf = vec![0; 8];
+        LittleEndian::write_u64(&mut buf, offset);
+        bytes.extend_from_slice(&buf);
+
+        // size
+        LittleEndian::write_u32(&mut buf[0..4], payload_slice.len() as u32);
+        bytes.extend_from_slice(&buf[0..4]);
+
+        // hash
+        LittleEndian::write_u64(&mut buf, seahash::hash(payload_slice));
+        bytes.extend_from_slice(&buf);
+
+        // payload
+        bytes.extend_from_slice(payload_slice);
+    }
+}
 
 /// Last position read from the log.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -292,20 +312,10 @@ impl MessageBuf {
 
     /// Adds a new message with a given payload.
     pub fn push<B: AsRef<[u8]>>(&mut self, payload: B) {
-        let payload_slice = payload.as_ref();
         let start_len = self.bytes.len();
 
         // blank offset, expect the log to set the offsets
-        let mut buf = vec![0; 8];
-        self.bytes.extend_from_slice(&buf);
-
-        LittleEndian::write_u32(&mut buf[0..4], payload_slice.len() as u32);
-        self.bytes.extend_from_slice(&buf[0..4]);
-
-        LittleEndian::write_u64(&mut buf, seahash::hash(payload_slice));
-        self.bytes.extend_from_slice(&buf);
-
-        self.bytes.extend_from_slice(payload_slice);
+        Message::serialize(&mut self.bytes, 0u64, payload);
 
         self.size += 1;
         self.byte_offsets.push(start_len);
@@ -905,7 +915,7 @@ mod tests {
         assert!(res.is_ok());
         let res = res.unwrap();
         assert_eq!(3, res.len());
-        assert_eq!(Some(12), res.last_offset());
+        assert_eq!(Some(Offset(12)), res.last_offset());
 
         let mut it = res.iter();
 
