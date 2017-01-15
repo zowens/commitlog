@@ -95,6 +95,8 @@ pub struct MessageSet {
     bytes: Vec<u8>,
     size: usize,
     last_off: Option<u64>,
+
+    // TODO: remove this
     next_position: Option<LogPosition>,
 }
 
@@ -183,7 +185,56 @@ impl MessageSet {
             offset: 0,
         }
     }
+
+    /// Serializes the message into a byte vector.
+    pub fn serialize(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(self.bytes.as_slice());
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<MessageSet, MessageError> {
+        let mut msgs = 0usize;
+        let mut last_off = None;
+
+        // iterate over the bytes to initialize size and ensure we have
+        // a properly formed message set
+        {
+            let mut bytes = bytes.as_slice();
+            while bytes.len() > 0 {
+                // check that the offset, size and hash are present
+                if bytes.len() < 20 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Message set has invlid length")).into());
+                }
+
+                let offset = LittleEndian::read_u64(&bytes[0..8]);
+                let size = LittleEndian::read_u32(&bytes[8..12]) as usize;
+                let hash = LittleEndian::read_u64(&bytes[12..20]);
+                if bytes.len() < (20 + size) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Message set has invlid length")).into());
+                }
+
+                // check the hash
+                let payload_hash = seahash::hash(&bytes[20..(size+20)]);
+                if payload_hash != hash {
+                    return Err(MessageError::InvalidHash);
+                }
+
+                // update metadata
+                msgs += 1;
+                last_off = Some(offset);
+
+                // move the slice along
+                bytes = &bytes[20+size..];
+            }
+        }
+        Ok(MessageSet {
+            bytes: bytes,
+            size: msgs,
+            last_off: last_off,
+            next_position: None,
+        })
+    }
 }
+
 
 /// Iterator for Message within a MessageSet.
 pub struct MessageIter<'a> {
@@ -834,6 +885,50 @@ mod tests {
     pub fn messagebuf_fromiterator() {
         let buf = vec!["test", "123"].iter().collect::<MessageBuf>();
         assert_eq!(2, buf.len());
+    }
+
+    #[test]
+    pub fn messageset_deserialize() {
+        let bytes = {
+            let mut buf = MessageBuf::new();
+            buf.push("foo");
+            buf.push("bar");
+            buf.push("baz");
+            buf.set_offsets(10);
+            buf.bytes
+        };
+
+        let bytes_copy = bytes.clone();
+
+        // deserialize it
+        let res = MessageSet::from_bytes(bytes_copy);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(3, res.len());
+        assert_eq!(Some(12), res.last_offset());
+
+        let mut it = res.iter();
+
+        {
+            let m0 = it.next().unwrap();
+            assert_eq!(10, m0.offset().0);
+            assert_eq!(b"foo", m0.payload());
+        }
+
+        {
+            let m1 = it.next().unwrap();
+            assert_eq!(11, m1.offset().0);
+            assert_eq!(b"bar", m1.payload());
+        }
+
+        {
+            let m2 = it.next().unwrap();
+            assert_eq!(12, m2.offset().0);
+            assert_eq!(b"baz", m2.payload());
+        }
+
+        let n = it.next();
+        assert!(n.is_none());
     }
 
     #[bench]
