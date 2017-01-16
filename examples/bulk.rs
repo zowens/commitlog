@@ -48,7 +48,11 @@ fn main() {
                 if let ReadPosition::Offset(Offset(prev)) = pos {
                     assert!(prev < off.0);
                 }
-                pos = ReadPosition::Position(entries.next_read_position().unwrap());
+                // TODO: re-enable read position based on log file positions
+                // rather than offset
+                //pos = ReadPosition::Position(entries.next_read_position().unwrap());
+
+                pos = ReadPosition::Offset(Offset(off.0 + 1));
             }
             None => {
                 let end = SystemTime::now();

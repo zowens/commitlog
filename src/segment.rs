@@ -104,20 +104,13 @@ impl<'a> Message<'a> {
 
 /// Last position read from the log.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct LogPosition {
-    pub(super) segment: u64,
-    pub(super) pos: u32,
-}
-
+pub struct NextPosition(pub u32);
 
 /// Readonly set of messages from the log.
 pub struct MessageSet {
     bytes: Vec<u8>,
     size: usize,
     last_off: Option<u64>,
-
-    // TODO: remove this
-    next_position: Option<LogPosition>,
 }
 
 impl MessageSet {
@@ -127,7 +120,6 @@ impl MessageSet {
             bytes: Vec::new(),
             size: 0,
             last_off: None,
-            next_position: None,
         }
     }
 
@@ -137,7 +129,6 @@ impl MessageSet {
             bytes: Vec::with_capacity(0),
             size: 0,
             last_off: None,
-            next_position: None,
         }
     }
 
@@ -181,21 +172,15 @@ impl MessageSet {
         self.size
     }
 
+    /// Number of bytes contained in the message set.
+    #[inline]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Last offset in the MessageSet.
     pub fn last_offset(&self) -> Option<Offset> {
         self.last_off.map(Offset)
-    }
-
-    /// Next read position within the log.
-    pub fn next_read_position(&self) -> Option<LogPosition> {
-        self.next_position.clone()
-    }
-
-    fn set_next_read_position(&mut self, log_start: u64, starting_file_pos: u32) {
-        self.next_position = Some(LogPosition {
-            segment: log_start,
-            pos: starting_file_pos + self.bytes.len() as u32,
-        });
     }
 
     /// Message iterator.
@@ -204,11 +189,6 @@ impl MessageSet {
             bytes: &self.bytes,
             offset: 0,
         }
-    }
-
-    /// Serializes the message into a byte vector.
-    pub fn serialize(&self, buf: &mut Vec<u8>) {
-        buf.extend_from_slice(self.bytes.as_slice());
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> Result<MessageSet, MessageError> {
@@ -250,7 +230,6 @@ impl MessageSet {
             bytes: bytes,
             size: msgs,
             last_off: last_off,
-            next_position: None,
         })
     }
 }
@@ -284,7 +263,6 @@ impl<'a> Iterator for MessageIter<'a> {
 /// of messages to be appended to the log.
 pub struct MessageBuf {
     bytes: Vec<u8>,
-    size: usize,
     byte_offsets: Vec<usize>,
 }
 
@@ -293,21 +271,19 @@ impl MessageBuf {
     pub fn new() -> MessageBuf {
         MessageBuf {
             bytes: Vec::new(),
-            size: 0,
             byte_offsets: Vec::new(),
         }
     }
 
     /// Number of messages added to the buffer.
     pub fn len(&self) -> usize {
-        self.size
+        self.byte_offsets.len()
     }
 
     /// Clears the message buffer.
     pub fn clear(&mut self) {
         self.bytes.clear();
         self.byte_offsets.clear();
-        self.size = 0;
     }
 
     /// Adds a new message with a given payload.
@@ -317,7 +293,6 @@ impl MessageBuf {
         // blank offset, expect the log to set the offsets
         Message::serialize(&mut self.bytes, 0u64, payload);
 
-        self.size += 1;
         self.byte_offsets.push(start_len);
     }
 
@@ -542,7 +517,7 @@ impl Segment {
         self.file.flush()
     }
 
-    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<MessageSet, MessageError> {
+    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<(MessageSet, NextPosition), MessageError> {
         self.file.seek(SeekFrom::Start(file_pos as u64))?;
 
         let mut buf_reader = match limit {
@@ -570,9 +545,8 @@ impl Segment {
             }
         }
 
-
-        msgs.set_next_read_position(self.base_offset, file_pos);
-        Ok(msgs)
+        let next_pos = file_pos + msgs.bytes().len() as u32;
+        Ok((msgs, NextPosition(next_pos)))
     }
 }
 
@@ -627,8 +601,6 @@ mod tests {
 
         let read_msg = reader.iter().next().unwrap();
         assert_eq!(read_msg.payload(), b"123456789");
-        // TODO: ... change this
-        // assert_eq!(read_msg.hash(), 0xcbf43926);
         assert_eq!(read_msg.size(), 9u32);
     }
 
@@ -755,16 +727,9 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
+        let (msgs, NextPosition(log_pos)) = f.read(0, ReadLimit::Messages(10)).unwrap();
         assert_eq!(3, msgs.len());
-
-        {
-            let log_pos = msgs.next_read_position();
-            assert!(log_pos.is_some());
-            let log_pos = log_pos.unwrap();
-            assert_eq!(0, log_pos.segment);
-            assert_eq!(msgs.bytes.len() as u32, log_pos.pos);
-        }
+        assert_eq!(msgs.bytes.len() as u32, log_pos);
 
         for (i, m) in msgs.iter().enumerate() {
             assert_eq!(i as u64, m.offset().0);
@@ -784,16 +749,9 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read(0, ReadLimit::Messages(2)).unwrap();
+        let (msgs, NextPosition(log_pos)) = f.read(0, ReadLimit::Messages(2)).unwrap();
         assert_eq!(2, msgs.len());
-
-        {
-            let log_pos = msgs.next_read_position();
-            assert!(log_pos.is_some());
-            let log_pos = log_pos.unwrap();
-            assert_eq!(0, log_pos.segment);
-            assert_eq!(msgs.bytes.len() as u32, log_pos.pos);
-        }
+        assert_eq!(msgs.bytes.len() as u32, log_pos);
     }
 
 
@@ -812,7 +770,9 @@ mod tests {
 
         // byte max contains message 0, but not the entirety of message 1
         let msgs = f.read(0, ReadLimit::Bytes((meta[1].file_pos() + 1) as usize))
-            .unwrap();
+            .unwrap()
+            .0;
+
         assert_eq!(1, msgs.len());
     }
 
@@ -832,24 +792,20 @@ mod tests {
         // byte max contains message 0, but not the entirety of message 1
         let mut file_pos = 0;
         for i in 0..3 {
-            let msgs = f.read(file_pos, ReadLimit::Messages(1))
+            let (msgs, NextPosition(next_pos)) = f.read(file_pos, ReadLimit::Messages(1))
                 .unwrap();
             assert_eq!(1, msgs.len());
             assert_eq!(i, msgs.iter().next().unwrap().offset().0);
 
-            let next_pos = msgs.next_read_position();
-            assert!(next_pos.is_some());
-            file_pos = next_pos.unwrap().pos;
+            file_pos = next_pos;
         }
 
         // last read should be empty
-        let msgs = f.read(file_pos, ReadLimit::Messages(1)).unwrap();
+        let (msgs, NextPosition(next_pos)) = f.read(file_pos, ReadLimit::Messages(1)).unwrap();
         assert_eq!(0, msgs.len());
 
         // next_pos should be the same as the input file pos
-        let next_pos = msgs.next_read_position();
-        assert!(next_pos.is_some());
-        assert_eq!(file_pos, next_pos.unwrap().pos);
+        assert_eq!(file_pos, next_pos);
     }
 
     #[test]
@@ -865,7 +821,7 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
+        let (msgs, _) = f.read(0, ReadLimit::Messages(10)).unwrap();
         assert_eq!(3, msgs.len());
 
         {
@@ -874,17 +830,9 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read(0, ReadLimit::Messages(10)).unwrap();
+        let (msgs, NextPosition(log_pos)) = f.read(0, ReadLimit::Messages(10)).unwrap();
         assert_eq!(4, msgs.len());
-
-        {
-            let log_pos = msgs.next_read_position();
-            assert!(log_pos.is_some());
-            let log_pos = log_pos.unwrap();
-            assert_eq!(0, log_pos.segment);
-            assert_eq!(msgs.bytes.len() as u32, log_pos.pos);
-        }
-
+        assert_eq!(msgs.bytes.len() as u32, log_pos);
 
         for (i, m) in msgs.iter().enumerate() {
             assert_eq!(i as u64, m.offset().0);
