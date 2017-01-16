@@ -65,7 +65,7 @@ mod index;
 #[cfg(test)]
 mod testutil;
 
-use std::collections::{Bound, BTreeMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::fmt;
 use std::fs;
@@ -552,7 +552,7 @@ impl CommitLog {
         }
 
         let mut seg_it = self.closed_segments
-            .range_mut(Bound::Included(&segment), Bound::Unbounded);
+            .range_mut(segment..);
 
         let mut seg = match seg_it.next() {
             Some(seg) => seg.1,
@@ -590,7 +590,7 @@ impl CommitLog {
         } else {
             trace!("Reading offset {} from old index", start_off);
             let found_index = self.closed_indexes
-                .range(Bound::Unbounded, Bound::Included(&start_off))
+                .range(..(start_off + 1))
                 .next_back();
             found_index.and_then(|(_, i)| i.find(start_off))
         };
@@ -611,7 +611,7 @@ impl CommitLog {
             Ok(self.active_segment.read(file_pos, limit)?)
         } else {
             let mut r = self.closed_segments
-                .range_mut(Bound::Unbounded, Bound::Included(&start_off));
+                .range_mut(..(start_off + 1));
             match r.next_back() {
                 Some((_, ref mut s)) => {
                     trace!("Reading messages from old index at file pos {}", file_pos);
