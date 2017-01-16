@@ -62,6 +62,7 @@ extern crate rand;
 
 mod segment;
 mod index;
+mod message;
 #[cfg(test)]
 mod testutil;
 
@@ -76,8 +77,8 @@ use std::mem::swap;
 use segment::{Segment, SegmentAppendError};
 use index::*;
 
-pub use segment::ReadLimit;
-pub use segment::{Message, MessageSet, MessageBuf, NextPosition};
+pub use segment::{ReadLimit, NextPosition};
+pub use message::{Message, MessageBuf, MessageSet, MessageIter};
 
 
 /// Offset of an appended log segment.
@@ -272,11 +273,11 @@ impl From<io::Error> for ReadError {
     }
 }
 
-impl From<segment::MessageError> for ReadError {
-    fn from(e: segment::MessageError) -> ReadError {
+impl From<message::MessageError> for ReadError {
+    fn from(e: message::MessageError) -> ReadError {
         match e {
-            segment::MessageError::IoError(e) => ReadError::Io(e),
-            segment::MessageError::InvalidHash => ReadError::CorruptLog,
+            message::MessageError::IoError(e) => ReadError::Io(e),
+            message::MessageError::InvalidHash => ReadError::CorruptLog,
         }
     }
 }
