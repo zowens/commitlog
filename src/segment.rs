@@ -143,9 +143,10 @@ impl Segment {
         self.base_offset
     }
 
-    pub fn append(&mut self,
-                  payload: &mut MessageBuf)
-                  -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
+    pub fn append<T: MessageSetMut>(&mut self,
+                  payload: &mut T)
+                  -> Result<Vec<LogEntryMetadata>, SegmentAppendError>
+    {
         let (write_pos, off, max_bytes) = match self.mode {
             SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => {
                 (write_pos, next_offset, max_bytes)
@@ -153,28 +154,28 @@ impl Segment {
             _ => return Err(SegmentAppendError::LogFull),
         };
 
-        payload.set_offsets(off);
-
         // ensure we have the capacity
         let payload_len = payload.bytes().len();
         if payload_len + write_pos > max_bytes {
             return Err(SegmentAppendError::LogFull);
         }
 
-        self.file.write_all(&payload.bytes())?;
+        let meta = super::message::set_offsets(payload, off, write_pos);
+
+        self.file.write_all(payload.bytes())?;
         self.mode = SegmentMode::ReadWrite {
             write_pos: write_pos + payload_len,
-            next_offset: off + payload.len() as u64,
+            next_offset: meta.iter().next_back().unwrap().offset + 1,
             max_bytes: max_bytes,
         };
-        Ok(payload.create_metadata(off, write_pos as u32))
+        Ok(meta)
     }
 
     pub fn flush_sync(&mut self) -> io::Result<()> {
         self.file.flush()
     }
 
-    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<(MessageSet, NextPosition), MessageError> {
+    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<(MessageBuf, NextPosition), MessageError> {
         self.file.seek(SeekFrom::Start(file_pos as u64))?;
 
         let mut buf_reader = match limit {
@@ -182,7 +183,7 @@ impl Segment {
             _ => BufReader::new(&mut self.file),
         };
 
-        let mut msgs = MessageSet::new();
+        let mut msgs = MessageBuf::default();
 
         loop {
             match msgs.read(&mut buf_reader) {
@@ -211,7 +212,6 @@ impl Segment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::Offset;
     use super::super::testutil::*;
     use test::Bencher;
     use std::path::PathBuf;
@@ -222,18 +222,18 @@ mod tests {
         let mut f = Segment::new(path, 0, 1024).unwrap();
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("12345");
             let meta = f.append(&mut buf).unwrap();
 
             assert_eq!(1, meta.len());
             let p0 = meta.iter().next().unwrap();
-            assert_eq!(p0.offset(), 0);
-            assert_eq!(p0.file_pos(), 0);
+            assert_eq!(p0.offset, 0);
+            assert_eq!(p0.file_pos, 0);
         }
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("66666");
             buf.push("77777");
             let meta = f.append(&mut buf).unwrap();
@@ -241,12 +241,12 @@ mod tests {
 
             let mut it = meta.iter();
             let p0 = it.next().unwrap();
-            assert_eq!(p0.offset(), 1);
-            assert_eq!(p0.file_pos(), 25);
+            assert_eq!(p0.offset, 1);
+            assert_eq!(p0.file_pos, 25);
 
             let p1 = it.next().unwrap();
-            assert_eq!(p1.offset(), 2);
-            assert_eq!(p1.file_pos(), 50);
+            assert_eq!(p1.offset, 2);
+            assert_eq!(p1.file_pos, 50);
         }
 
         f.flush_sync().unwrap();
@@ -258,7 +258,7 @@ mod tests {
 
         {
             let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("12345");
             buf.push("66666");
             f.append(&mut buf).unwrap();
@@ -287,7 +287,7 @@ mod tests {
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
@@ -309,7 +309,7 @@ mod tests {
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
@@ -328,7 +328,7 @@ mod tests {
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
         let meta = {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
@@ -336,7 +336,7 @@ mod tests {
         };
 
         // byte max contains message 0, but not the entirety of message 1
-        let msgs = f.read(0, ReadLimit::Bytes((meta[1].file_pos() + 1) as usize))
+        let msgs = f.read(0, ReadLimit::Bytes((meta[1].file_pos + 1) as usize))
             .unwrap()
             .0;
 
@@ -349,7 +349,7 @@ mod tests {
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
@@ -381,7 +381,7 @@ mod tests {
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(3, msgs.len());
 
         {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push("foo");
             f.append(&mut buf).unwrap();
         }
@@ -406,56 +406,6 @@ mod tests {
         }
     }
 
-    #[test]
-    pub fn messagebuf_fromiterator() {
-        let buf = vec!["test", "123"].iter().collect::<MessageBuf>();
-        assert_eq!(2, buf.len());
-    }
-
-    #[test]
-    pub fn messageset_deserialize() {
-        let bytes = {
-            let mut buf = MessageBuf::new();
-            buf.push("foo");
-            buf.push("bar");
-            buf.push("baz");
-            buf.set_offsets(10);
-            Vec::from(buf.bytes())
-        };
-
-        let bytes_copy = bytes.clone();
-
-        // deserialize it
-        let res = MessageSet::from_bytes(bytes_copy);
-        assert!(res.is_ok());
-        let res = res.unwrap();
-        assert_eq!(3, res.len());
-        assert_eq!(Some(Offset(12)), res.last_offset());
-
-        let mut it = res.iter();
-
-        {
-            let m0 = it.next().unwrap();
-            assert_eq!(10, m0.offset().0);
-            assert_eq!(b"foo", m0.payload());
-        }
-
-        {
-            let m1 = it.next().unwrap();
-            assert_eq!(11, m1.offset().0);
-            assert_eq!(b"bar", m1.payload());
-        }
-
-        {
-            let m2 = it.next().unwrap();
-            assert_eq!(12, m2.offset().0);
-            assert_eq!(b"baz", m2.payload());
-        }
-
-        let n = it.next();
-        assert!(n.is_none());
-    }
-
     #[bench]
     fn bench_segment_append(b: &mut Bencher) {
         let path = TestDir::new();
@@ -464,19 +414,9 @@ mod tests {
         let payload = b"01234567891011121314151617181920";
 
         b.iter(|| {
-            let mut buf = MessageBuf::new();
+            let mut buf = MessageBuf::default();
             buf.push(payload);
             seg.append(&mut buf).unwrap();
-        });
-    }
-
-    #[bench]
-    fn bench_message_construct(b: &mut Bencher) {
-        b.iter(|| {
-            let mut msg_buf = MessageBuf::new();
-            msg_buf.push("719c3b4556066a1c7a06c9d55959d003d9b46273aabe2eae15ef4ba78321ae2a68b0997a4abbd035a4cdbc8b27d701089a5af63a8b81f9dc16a874d0eda0983b79c1a6f79fe3ae61612ba2558562a85595f2f3f07fab8faba1b849685b61aad6b131b7041ca79cc662b4c5aad4d1b78fb1034fafa2fe4f30207395e399c6d724");
-            msg_buf.push("2cea26f165640d448a9b89f1f871e6fca80a1255b1daea6752bf99d8c5f90e706deaecddf304b2bf5a5e72e32b29bc7c54018265d17317a670ea406fd7e6b485a19f5fb1efe686badb6599d45106b95b55695cd4e24729edb312a5dec1bc80e8d8b3ee4b69af1f3a9c801e7fb527e65f7c13c62bb37261c0");
-            msg_buf.set_offsets(1250);
         });
     }
 }

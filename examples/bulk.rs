@@ -41,7 +41,7 @@ fn main() {
     loop {
         let entries = log.read(pos, ReadLimit::Bytes(10240))
             .expect("Unable to read messages from the log");
-        match entries.last_offset() {
+        match entries.iter().last().map(|m| m.offset()) {
             Some(off) => {
                 iterations += 1;
                 total += entries.len();
