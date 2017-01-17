@@ -283,7 +283,8 @@ impl From<MessageError> for ReadError {
     fn from(e: MessageError) -> ReadError {
         match e {
             MessageError::IoError(e) => ReadError::Io(e),
-            MessageError::InvalidHash | MessageError::InvalidPayloadLength  => ReadError::CorruptLog,
+            MessageError::InvalidHash |
+            MessageError::InvalidPayloadLength => ReadError::CorruptLog,
         }
     }
 }
@@ -471,7 +472,8 @@ impl CommitLog {
     {
         // first write to the current segment
         // TODO: deal with message size > max file bytes?
-        let entries = self.active_segment.append(buf)
+        let entries = self.active_segment
+            .append(buf)
             .or_else(|e| {
                 match e {
                     // if the log is full, gracefully close the current segment
@@ -588,12 +590,8 @@ impl CommitLog {
         // read
         if file_pos >= seg.size() as u32 {
             match seg_it.next() {
-                Some(seg) => {
-                    Ok(seg.1.read(0, limit)?.0)
-                }
-                None => {
-                    Ok(self.active_segment.read(0, limit)?.0)
-                }
+                Some(seg) => Ok(seg.1.read(0, limit)?.0),
+                None => Ok(self.active_segment.read(0, limit)?.0),
             }
         } else {
             Ok(seg.read(file_pos, limit)?.0)
@@ -959,4 +957,3 @@ mod tests {
         }
     }
 }
-

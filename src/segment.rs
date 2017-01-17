@@ -144,9 +144,8 @@ impl Segment {
     }
 
     pub fn append<T: MessageSetMut>(&mut self,
-                  payload: &mut T)
-                  -> Result<Vec<LogEntryMetadata>, SegmentAppendError>
-    {
+                                    payload: &mut T)
+                                    -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
         let (write_pos, off, max_bytes) = match self.mode {
             SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => {
                 (write_pos, next_offset, max_bytes)
@@ -175,7 +174,10 @@ impl Segment {
         self.file.flush()
     }
 
-    pub fn read(&mut self, file_pos: u32, limit: ReadLimit) -> Result<(MessageBuf, NextPosition), MessageError> {
+    pub fn read(&mut self,
+                file_pos: u32,
+                limit: ReadLimit)
+                -> Result<(MessageBuf, NextPosition), MessageError> {
         self.file.seek(SeekFrom::Start(file_pos as u64))?;
 
         let mut buf_reader = match limit {

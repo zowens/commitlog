@@ -159,8 +159,8 @@ impl Index {
             assert!(index.len() % INDEX_ENTRY_BYTES == 0);
 
             // check if this is a full or partial index
-            let last_rel_ind_start = index.len() - INDEX_ENTRY_BYTES;
-            let last_val = LittleEndian::read_u32(&index[last_rel_ind_start..last_rel_ind_start + 4]);
+            let rel_ind_start = index.len() - INDEX_ENTRY_BYTES;
+            let last_val = LittleEndian::read_u32(&index[rel_ind_start..rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
                 INDEX_ENTRY_BYTES *
@@ -312,10 +312,9 @@ impl Index {
             trace!("Found offset {} at entry {}", offset, i);
 
             if i < self.next_write_pos / INDEX_ENTRY_BYTES {
-                let entry_start = i * INDEX_ENTRY_BYTES;
-                let rel_offset_val = LittleEndian::read_u32(&mem_slice[entry_start..entry_start + 4]);
-                let file_pos_val = LittleEndian::read_u32(&mem_slice[entry_start + 4..entry_start +
-                                                                                   8]);
+                let entry_pos = i * INDEX_ENTRY_BYTES;
+                let rel_offset_val = LittleEndian::read_u32(&mem_slice[entry_pos..entry_pos + 4]);
+                let file_pos_val = LittleEndian::read_u32(&mem_slice[entry_pos + 4..entry_pos + 8]);
 
                 // ignore if the offset is < desired (does not exist in this index)
                 if rel_offset_val < rel_offset {

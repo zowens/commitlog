@@ -134,9 +134,7 @@ pub trait MessageSet {
 
     /// Iterator on the messages in the message set.
     fn iter(&self) -> MessageIter {
-        MessageIter {
-            bytes: self.bytes(),
-        }
+        MessageIter { bytes: self.bytes() }
     }
 
     /// Number of messages in the message set.
@@ -154,7 +152,7 @@ pub trait MessageSet {
 ///
 /// The mutation occurs once the `MessageSet` has been appended to the log. The
 /// messages will contain the absolute offsets after the append opperation.
-pub trait MessageSetMut : MessageSet {
+pub trait MessageSetMut: MessageSet {
     /// Bytes of the buffer for mutation.
     ///
     /// NOTE: The log will need to mutate the bytes in the buffer
@@ -188,7 +186,6 @@ impl MessageSetMut for MessageBuf {
     fn bytes_mut(&mut self) -> &mut [u8] {
         &mut self.bytes
     }
-
 }
 
 impl<R: AsRef<[u8]>> FromIterator<R> for MessageBuf {
@@ -227,7 +224,7 @@ impl MessageBuf {
                 }
 
                 // check the hash
-                let payload_hash = seahash::hash(&bytes[20..(size+20)]);
+                let payload_hash = seahash::hash(&bytes[20..(size + 20)]);
                 if payload_hash != hash {
                     return Err(MessageError::InvalidHash);
                 }
@@ -236,7 +233,7 @@ impl MessageBuf {
                 msgs += 1;
 
                 // move the slice along
-                bytes = &bytes[20+size..];
+                bytes = &bytes[20 + size..];
             }
         }
         Ok(MessageBuf {
@@ -264,8 +261,7 @@ impl MessageBuf {
     }
 
     /// Reads a single message. The reader is expected to have a full message serialized.
-    pub fn read<R: Read>(&mut self, reader: &mut R) -> Result<(), MessageError>
-    {
+    pub fn read<R: Read>(&mut self, reader: &mut R) -> Result<(), MessageError> {
         let mut offset_buf = vec![0; 8];
         read_n!(reader, offset_buf, 8, "Unable to read offset");
         let mut size_buf = vec![0; 4];
@@ -296,7 +292,10 @@ impl MessageBuf {
 }
 
 /// Mutates the buffer with starting offset
-pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S, starting_offset: u64, base_file_pos: usize) -> Vec<LogEntryMetadata> {
+pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
+                                     starting_offset: u64,
+                                     base_file_pos: usize)
+                                     -> Vec<LogEntryMetadata> {
     let mut meta = Vec::new();
 
     let mut bytes = msg_set.bytes_mut();
@@ -478,10 +477,17 @@ mod tests {
     fn bench_message_construct(b: &mut Bencher) {
         b.iter(|| {
             let mut msg_buf = MessageBuf::default();
-            msg_buf.push("719c3b4556066a1c7a06c9d55959d003d9b46273aabe2eae15ef4ba78321ae2a68b0997a4abbd035a4cdbc8b27d701089a5af63a8b81f9dc16a874d0eda0983b79c1a6f79fe3ae61612ba2558562a85595f2f3f07fab8faba1b849685b61aad6b131b7041ca79cc662b4c5aad4d1b78fb1034fafa2fe4f30207395e399c6d724");
-            msg_buf.push("2cea26f165640d448a9b89f1f871e6fca80a1255b1daea6752bf99d8c5f90e706deaecddf304b2bf5a5e72e32b29bc7c54018265d17317a670ea406fd7e6b485a19f5fb1efe686badb6599d45106b95b55695cd4e24729edb312a5dec1bc80e8d8b3ee4b69af1f3a9c801e7fb527e65f7c13c62bb37261c0");
+            msg_buf.push("719c3b4556066a1c7a06c9d55959d003d9b4627
+3aabe2eae15ef4ba78321ae2a68b0997a4abbd035a4cdbc8b27d701089a5af63a
+8b81f9dc16a874d0eda0983b79c1a6f79fe3ae61612ba2558562a85595f2f3f07
+fab8faba1b849685b61aad6b131b7041ca79cc662b4c5aad4d1b78fb1034fafa2
+fe4f30207395e399c6d724");
+            msg_buf.push("2cea26f165640d448a9b89f1f871e6fca80a125
+5b1daea6752bf99d8c5f90e706deaecddf304b2bf5a5e72e32b29bc7c54018265
+d17317a670ea406fd7e6b485a19f5fb1efe686badb6599d45106b95b55695cd4e
+24729edb312a5dec1bc80e8d8b3ee4b69af1f3a9c801e7fb527e65f7c13c62bb3
+7261c0");
             set_offsets(&mut msg_buf, 1250, 0);
         });
     }
 }
-
