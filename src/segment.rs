@@ -100,8 +100,8 @@ impl Segment {
         where P: AsRef<Path>
     {
         let seg_file = OpenOptions::new().read(true)
-            .write(false)
-            .append(false)
+            .write(true)
+            .append(true)
             .open(&seg_path)?;
 
 

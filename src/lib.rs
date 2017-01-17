@@ -340,9 +340,9 @@ impl CommitLog {
 
         info!("Opening log in directory {:?}", &opts.log_dir.to_str());
 
-        let (closed_segments, mut closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
+        let (mut closed_segments, mut closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
 
-        // try to reuse the last segment if it is not full. otherwise, open a new index
+        // try to reuse the last index if it is not full. otherwise, open a new index
         // at the correct offset
         let (ind, next_offset) = {
             let last_ind = closed_indexes.values()
@@ -385,8 +385,14 @@ impl CommitLog {
             ind.set_readonly()?;
         }
 
-        info!("Starting fresh segment {}", next_offset);
-        let seg = Segment::new(&opts.log_dir, next_offset, opts.log_max_bytes)?;
+        // reuse closed segment
+        let seg = match closed_segments.remove(&next_offset) {
+            Some(s) => s,
+            None => {
+                info!("Starting fresh segment {}", next_offset);
+                Segment::new(&opts.log_dir, next_offset, opts.log_max_bytes)?
+            }
+        };
 
         Ok(CommitLog {
             closed_segments: closed_segments,
@@ -918,6 +924,30 @@ mod tests {
 
             let Offset(off) = log.append_msg("moar data").unwrap();
             assert_eq!(99, off);
+        }
+    }
+
+    #[test]
+    pub fn reopen_log_without_segment_write() {
+        env_logger::init().unwrap_or(());
+
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(1000);
+
+        {
+            let mut log = CommitLog::new(opts.clone()).unwrap();
+            log.flush().unwrap();
+        }
+
+        {
+            // TODO: fix the problem or reopening log w/o writes to first segment
+            CommitLog::new(opts.clone()).expect("Should be able to reopen log without writes");
+        }
+
+        {
+            CommitLog::new(opts).expect("Should be able to reopen log without writes");
         }
     }
 }
