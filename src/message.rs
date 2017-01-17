@@ -248,6 +248,12 @@ impl MessageBuf {
         self.len = 0;
     }
 
+    /// Clears the message buffer without dropping the contents.
+    pub unsafe fn unsafe_clear(&mut self) {
+        self.bytes.set_len(0);
+        self.len = 0;
+    }
+
     /// Moves the underlying serialized bytes into a vector.
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
