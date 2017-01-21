@@ -307,6 +307,26 @@ impl Index {
         unsafe {
             let mem_slice = self.mmap.as_slice();
             trace!("offset={} Next write pos = {}", offset, self.next_write_pos);
+
+
+            // attempt to find the offset assuming no truncation
+            // and fall back to binary search otherwise
+            if (rel_offset as usize) < self.next_write_pos / INDEX_ENTRY_BYTES {
+                trace!("Attempting to read offset from exact location");
+                // read exact entry
+                let entry_pos = rel_offset as usize * INDEX_ENTRY_BYTES;
+                let rel_offset_val = LittleEndian::read_u32(&mem_slice[entry_pos..entry_pos + 4]);
+                trace!("Found relative offset. rel_offset = {}, entry offset = {}", rel_offset, rel_offset_val);
+                if rel_offset_val == rel_offset {
+                    let file_pos_val = LittleEndian::read_u32(&mem_slice[entry_pos + 4..entry_pos + 8]);
+                    return Some(IndexEntry {
+                        rel_offset: rel_offset,
+                        base_offset: self.base_offset,
+                        file_pos: file_pos_val,
+                    })
+                }
+            }
+
             let i = binary_search(&mem_slice[0..self.next_write_pos],
                                   |_, v| v.cmp(&rel_offset));
             trace!("Found offset {} at entry {}", offset, i);
@@ -340,6 +360,7 @@ mod tests {
     use super::super::testutil::*;
     use std::fs;
     use std::path::PathBuf;
+    use test::test::Bencher;
     use env_logger;
 
     #[test]
@@ -445,6 +466,27 @@ mod tests {
         assert_eq!(6, res.relative_offset());
         assert_eq!(16, res.offset());
         assert_eq!(5, res.file_position());
+    }
+
+    #[test]
+    pub fn find_exact() {
+        env_logger::init().unwrap_or(());
+
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
+        index.append(10, 1).unwrap();
+        index.append(11, 2).unwrap();
+        index.append(12, 3).unwrap();
+        index.append(13, 4).unwrap();
+        index.append(14, 5).unwrap();
+        index.append(15, 6).unwrap();
+        index.append(16, 7).unwrap();
+        index.append(17, 8).unwrap();
+
+        let res = index.find(16).unwrap();
+        assert_eq!(6, res.relative_offset());
+        assert_eq!(16, res.offset());
+        assert_eq!(7, res.file_position());
     }
 
     #[test]
@@ -574,5 +616,18 @@ mod tests {
             assert_eq!(1, last_entry.relative_offset());
             assert_eq!(2, last_entry.file_position());
         }
+    }
+
+    #[bench]
+    fn bench_find_exact(b: &mut Bencher) {
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 9000usize).unwrap();
+        for i in 10u32..1010 {
+            index.append(i as u64, i).unwrap();
+        }
+        index.flush_sync().unwrap();
+        b.iter(|| {
+            index.find(943).unwrap();
+        })
     }
 }
