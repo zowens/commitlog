@@ -1,5 +1,6 @@
 use std::iter::{IntoIterator, FromIterator};
 use std::io::{self, Read};
+use std::convert::AsMut;
 use byteorder::{LittleEndian, ByteOrder};
 use super::Offset;
 use seahash;
@@ -153,11 +154,14 @@ pub trait MessageSet {
 /// The mutation occurs once the `MessageSet` has been appended to the log. The
 /// messages will contain the absolute offsets after the append opperation.
 pub trait MessageSetMut: MessageSet {
+    /// ByteMut type used to derference a mutable slice of bytes.
+    type ByteMut: AsMut<[u8]>;
+
     /// Bytes of the buffer for mutation.
     ///
     /// NOTE: The log will need to mutate the bytes in the buffer
     /// in order to set the correct offsets upon append.
-    fn bytes_mut(&mut self) -> &mut [u8];
+    fn bytes_mut(&mut self) -> &mut Self::ByteMut;
 }
 
 /// Mutable message buffer.
@@ -183,7 +187,8 @@ impl MessageSet for MessageBuf {
 }
 
 impl MessageSetMut for MessageBuf {
-    fn bytes_mut(&mut self) -> &mut [u8] {
+    type ByteMut = Vec<u8>;
+    fn bytes_mut(&mut self) -> &mut Vec<u8> {
         &mut self.bytes
     }
 }
@@ -304,7 +309,7 @@ pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
                                      -> Vec<LogEntryMetadata> {
     let mut meta = Vec::new();
 
-    let mut bytes = msg_set.bytes_mut();
+    let mut bytes = msg_set.bytes_mut().as_mut();
 
     let mut rel_off = 0;
     let mut rel_pos = 0;
