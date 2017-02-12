@@ -32,7 +32,7 @@ fn main() {
     log.append("second message").unwrap(); // offset 1
 
     // read the messages
-    let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
+    let messages = log.read(0, ReadLimit::default()).unwrap();
     for msg in messages.iter() {
         println!("{} - {}", msg.offset(), String::from_utf8_lossy(msg.payload()));
     }
