@@ -1,16 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::fs::{OpenOptions, File};
-use std::io::{self, Write, BufReader, Seek, SeekFrom};
+use std::io::{self, Write};
 use super::message::*;
+use super::reader::*;
 
 /// Number of bytes contained in the base name of the file.
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
 /// File extension for the segment file.
 pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
-
-/// Last position read from the log.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct NextPosition(pub u32);
 
 enum SegmentMode {
     ReadWrite {
@@ -54,16 +51,6 @@ impl From<io::Error> for SegmentAppendError {
         SegmentAppendError::IoError(e)
     }
 }
-
-/// Batch size limitation on read.
-pub enum ReadLimit {
-    /// Limit the number of bytes read from the log. This is recommended.
-    Bytes(usize),
-
-    /// Limit the number of messages read from the log.
-    Messages(usize),
-}
-
 
 impl Segment {
     pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize) -> io::Result<Segment>
@@ -174,39 +161,11 @@ impl Segment {
         self.file.flush()
     }
 
-    pub fn read(&mut self,
-                file_pos: u32,
-                limit: ReadLimit)
-                -> Result<(MessageBuf, NextPosition), MessageError> {
-        self.file.seek(SeekFrom::Start(file_pos as u64))?;
-
-        let mut buf_reader = match limit {
-            ReadLimit::Bytes(n) => BufReader::with_capacity(n, &mut self.file),
-            _ => BufReader::new(&mut self.file),
-        };
-
-        let mut msgs = MessageBuf::default();
-
-        loop {
-            match msgs.read(&mut buf_reader) {
-                Ok(()) => {
-                    match limit {
-                        ReadLimit::Messages(l) if l <= msgs.len() => {
-                            break;
-                        },
-                        _ => {}
-                    }
-                }
-                // EOF counts as an end to the stream, thus we're done fetching messages
-                Err(MessageError::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    break;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        let next_pos = file_pos + msgs.bytes().len() as u32;
-        Ok((msgs, NextPosition(next_pos)))
+    pub fn read_slice<T: LogSliceReader>(&self,
+                                         file_pos: u32,
+                                         bytes: u32)
+                                         -> Result<T::Result, MessageError> {
+        T::read_from(&self.file, file_pos, bytes as usize)
     }
 }
 
@@ -296,33 +255,13 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let (msgs, NextPosition(log_pos)) = f.read(0, ReadLimit::Messages(10)).unwrap();
+        let msgs = f.read_slice::<MessageBufReader>(0, 83).unwrap();
         assert_eq!(3, msgs.len());
-        assert_eq!(msgs.bytes().len() as u32, log_pos);
 
         for (i, m) in msgs.iter().enumerate() {
-            assert_eq!(i as u64, m.offset().0);
+            assert_eq!(i as u64, m.offset());
         }
     }
-
-    #[test]
-    pub fn log_read_with_msg_limit() {
-        let log_dir = TestDir::new();
-        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
-
-        {
-            let mut buf = MessageBuf::default();
-            buf.push("0123456789");
-            buf.push("aaaaaaaaaa");
-            buf.push("abc");
-            f.append(&mut buf).unwrap();
-        }
-
-        let (msgs, NextPosition(log_pos)) = f.read(0, ReadLimit::Messages(2)).unwrap();
-        assert_eq!(2, msgs.len());
-        assert_eq!(msgs.bytes().len() as u32, log_pos);
-    }
-
 
     #[test]
     pub fn log_read_with_size_limit() {
@@ -337,44 +276,11 @@ mod tests {
             f.append(&mut buf).unwrap()
         };
 
-        // byte max contains message 0, but not the entirety of message 1
-        let msgs = f.read(0, ReadLimit::Bytes((meta[1].file_pos + 1) as usize))
-            .unwrap()
-            .0;
+        // byte max contains message 0
+        let msgs = f.read_slice::<MessageBufReader>(0, meta[1].file_pos)
+            .unwrap();
 
         assert_eq!(1, msgs.len());
-    }
-
-    #[test]
-    pub fn log_read_with_log_position() {
-        let log_dir = TestDir::new();
-        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
-
-        {
-            let mut buf = MessageBuf::default();
-            buf.push("0123456789");
-            buf.push("aaaaaaaaaa");
-            buf.push("abc");
-            f.append(&mut buf).unwrap();
-        }
-
-        // byte max contains message 0, but not the entirety of message 1
-        let mut file_pos = 0;
-        for i in 0..3 {
-            let (msgs, NextPosition(next_pos)) = f.read(file_pos, ReadLimit::Messages(1))
-                .unwrap();
-            assert_eq!(1, msgs.len());
-            assert_eq!(i, msgs.iter().next().unwrap().offset().0);
-
-            file_pos = next_pos;
-        }
-
-        // last read should be empty
-        let (msgs, NextPosition(next_pos)) = f.read(file_pos, ReadLimit::Messages(1)).unwrap();
-        assert_eq!(0, msgs.len());
-
-        // next_pos should be the same as the input file pos
-        assert_eq!(file_pos, next_pos);
     }
 
     #[test]
@@ -390,7 +296,7 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let (msgs, _) = f.read(0, ReadLimit::Messages(10)).unwrap();
+        let msgs = f.read_slice::<MessageBufReader>(0, 83).unwrap();
         assert_eq!(3, msgs.len());
 
         {
@@ -399,12 +305,11 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let (msgs, NextPosition(log_pos)) = f.read(0, ReadLimit::Messages(10)).unwrap();
+        let msgs = f.read_slice::<MessageBufReader>(0, 106).unwrap();
         assert_eq!(4, msgs.len());
-        assert_eq!(msgs.bytes().len() as u32, log_pos);
 
         for (i, m) in msgs.iter().enumerate() {
-            assert_eq!(i as u64, m.offset().0);
+            assert_eq!(i as u64, m.offset());
         }
     }
 

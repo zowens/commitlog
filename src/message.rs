@@ -1,5 +1,6 @@
 use std::iter::{IntoIterator, FromIterator};
 use std::io::{self, Read};
+use std::convert::AsMut;
 use byteorder::{LittleEndian, ByteOrder};
 use super::Offset;
 use seahash;
@@ -73,7 +74,7 @@ impl<'a> Message<'a> {
     /// Offset of the message in the log.
     #[inline]
     pub fn offset(&self) -> Offset {
-        Offset(LittleEndian::read_u64(&self.bytes[0..8]))
+        LittleEndian::read_u64(&self.bytes[0..8])
     }
 
     /// Payload of the message.
@@ -153,11 +154,14 @@ pub trait MessageSet {
 /// The mutation occurs once the `MessageSet` has been appended to the log. The
 /// messages will contain the absolute offsets after the append opperation.
 pub trait MessageSetMut: MessageSet {
+    /// ByteMut type used to derference a mutable slice of bytes.
+    type ByteMut: AsMut<[u8]>;
+
     /// Bytes of the buffer for mutation.
     ///
     /// NOTE: The log will need to mutate the bytes in the buffer
     /// in order to set the correct offsets upon append.
-    fn bytes_mut(&mut self) -> &mut [u8];
+    fn bytes_mut(&mut self) -> &mut Self::ByteMut;
 }
 
 /// Mutable message buffer.
@@ -183,7 +187,8 @@ impl MessageSet for MessageBuf {
 }
 
 impl MessageSetMut for MessageBuf {
-    fn bytes_mut(&mut self) -> &mut [u8] {
+    type ByteMut = Vec<u8>;
+    fn bytes_mut(&mut self) -> &mut Vec<u8> {
         &mut self.bytes
     }
 }
@@ -298,13 +303,14 @@ impl MessageBuf {
 }
 
 /// Mutates the buffer with starting offset
+#[doc(hidden)]
 pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
                                      starting_offset: u64,
                                      base_file_pos: usize)
                                      -> Vec<LogEntryMetadata> {
     let mut meta = Vec::new();
 
-    let mut bytes = msg_set.bytes_mut();
+    let mut bytes = msg_set.bytes_mut().as_mut();
 
     let mut rel_off = 0;
     let mut rel_pos = 0;
@@ -332,6 +338,7 @@ pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
 
 /// Holds the pair of offset written to file position in the segment file.
 #[derive(Copy, Clone, Debug)]
+#[doc(hidden)]
 pub struct LogEntryMetadata {
     pub offset: u64,
     pub file_pos: u32,
@@ -360,14 +367,14 @@ mod tests {
             assert_eq!(msg.payload(), b"123456789");
             assert_eq!(msg.hash(), 13331223911193280505);
             assert_eq!(msg.size(), 9u32);
-            assert_eq!(msg.offset().0, 100);
+            assert_eq!(msg.offset(), 100);
         }
         {
             let msg = msg_it.next().unwrap();
             assert_eq!(msg.payload(), b"000000000");
             assert_eq!(msg.hash(), 8467704495454493044);
             assert_eq!(msg.size(), 9u32);
-            assert_eq!(msg.offset().0, 101);
+            assert_eq!(msg.offset(), 101);
         }
 
         assert!(msg_it.next().is_none());
@@ -386,7 +393,7 @@ mod tests {
         let read_msg = reader.iter().next().unwrap();
         assert_eq!(read_msg.payload(), b"123456789");
         assert_eq!(read_msg.size(), 9u32);
-        assert_eq!(read_msg.offset().0, 120);
+        assert_eq!(read_msg.offset(), 120);
     }
 
 
@@ -459,19 +466,19 @@ mod tests {
 
         {
             let m0 = it.next().unwrap();
-            assert_eq!(10, m0.offset().0);
+            assert_eq!(10, m0.offset());
             assert_eq!(b"foo", m0.payload());
         }
 
         {
             let m1 = it.next().unwrap();
-            assert_eq!(11, m1.offset().0);
+            assert_eq!(11, m1.offset());
             assert_eq!(b"bar", m1.payload());
         }
 
         {
             let m2 = it.next().unwrap();
-            assert_eq!(12, m2.offset().0);
+            assert_eq!(12, m2.offset());
             assert_eq!(b"baz", m2.payload());
         }
 

@@ -30,7 +30,7 @@
 //!     log.append_msg("second message").unwrap(); // offset 1
 //!
 //!     // read the messages
-//!     let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
+//!     let messages = log.read(0, ReadLimit::default()).unwrap();
 //!     for msg in messages {
 //!         println!("{} - {}", msg.offset(), String::from_utf8_lossy(msg.payload()));
 //!     }
@@ -41,10 +41,10 @@
 //! }
 //! ```
 
-#![feature(test, btree_range, collections_bound, pub_restricted)]
+#![feature(test, btree_range, collections_bound, pub_restricted, step_by)]
 
 // (for test) This is silly...
-#![allow(unused_features)]
+#![allow(unused_features, unknown_lints)]
 
 #[macro_use]
 extern crate log;
@@ -60,37 +60,31 @@ extern crate test;
 #[cfg(test)]
 extern crate rand;
 
+pub mod reader;
+pub mod message;
 mod segment;
 mod index;
-mod message;
+mod file_set;
 #[cfg(test)]
 mod testutil;
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::fmt;
 use std::fs;
 use std::io;
 use std::error;
 use std::iter::{DoubleEndedIterator, ExactSizeIterator};
-use std::mem::swap;
-use segment::{Segment, SegmentAppendError};
+use segment::SegmentAppendError;
 use index::*;
 
-pub use segment::{ReadLimit, NextPosition};
-pub use message::{Message, MessageBuf, MessageSet, MessageSetMut, MessageIter};
+use message::{MessageBuf, MessageSetMut};
 use message::MessageError;
+use file_set::FileSet;
+use reader::{LogSliceReader, MessageBufReader};
 
 
 /// Offset of an appended log segment.
-#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
-pub struct Offset(pub u64);
-
-impl fmt::Display for Offset {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Offset({})", self.0)
-    }
-}
+pub type Offset = u64;
 
 /// Offset range of log append.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -99,7 +93,7 @@ pub struct OffsetRange(u64, usize);
 impl OffsetRange {
     /// Starting offset of the range.
     pub fn first(&self) -> Offset {
-        Offset(self.0)
+        self.0
     }
 
     /// Number of offsets within the range.
@@ -137,7 +131,7 @@ impl Iterator for OffsetRangeIter {
         } else {
             let v = self.pos;
             self.pos += 1;
-            Some(Offset(v))
+            Some(v)
         }
     }
 
@@ -159,7 +153,7 @@ impl DoubleEndedIterator for OffsetRangeIter {
         } else {
             let v = self.end - 1;
             self.end -= 1;
-            Some(Offset(v))
+            Some(v)
         }
     }
 }
@@ -217,24 +211,6 @@ impl fmt::Display for AppendError {
     }
 }
 
-// TODO: expose LogPosition on read
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct LogPosition {
-    segment: u64,
-    position: u32,
-}
-
-/// Starting location of a read
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ReadPosition {
-    /// Start reading from the initial offset
-    Beginning,
-    /// Start reading from a specified offset
-    Offset(Offset),
-    /// Start readong from a previous position
-    Position(LogPosition),
-}
-
 /// Error enum for commit log read operation.
 #[derive(Debug)]
 pub enum ReadError {
@@ -242,16 +218,33 @@ pub enum ReadError {
     Io(io::Error),
     /// A segment in the log is corrupt, or the index itself is corrupt
     CorruptLog,
-    /// A Log position was supplied that is invalid.
-    InvalidLogPosition,
+    /// Offset supplied was not invalid.
+    NoSuchSegment,
 }
+
+/// Batch size limitation on read.
+pub struct ReadLimit(usize);
+impl ReadLimit {
+    /// Read limit byte number of bytes.
+    pub fn max_bytes(n: usize) -> ReadLimit {
+        ReadLimit(n)
+    }
+}
+
+impl Default for ReadLimit {
+    fn default() -> ReadLimit {
+        // 8kb default
+        ReadLimit(8 * 1024)
+    }
+}
+
 
 impl error::Error for ReadError {
     fn description(&self) -> &str {
         match *self {
             ReadError::Io(_) => "File IO error occurred while reading to the log",
             ReadError::CorruptLog => "Corrupt log segment has been detected",
-            ReadError::InvalidLogPosition => "Log position is invalid",
+            ReadError::NoSuchSegment => "The offset requested does not exist in the log",
         }
     }
 
@@ -268,7 +261,7 @@ impl fmt::Display for ReadError {
         match *self {
             ReadError::Io(_) => write!(f, "IO Error"),
             ReadError::CorruptLog => write!(f, "Corrupt Log Error"),
-            ReadError::InvalidLogPosition => write!(f, "Invalid log position"),
+            ReadError::NoSuchSegment => write!(f, "Offset does not exist"),
         }
     }
 }
@@ -285,6 +278,18 @@ impl From<MessageError> for ReadError {
             MessageError::IoError(e) => ReadError::Io(e),
             MessageError::InvalidHash |
             MessageError::InvalidPayloadLength => ReadError::CorruptLog,
+        }
+    }
+}
+
+impl From<RangeFindError> for ReadError {
+    fn from(e: RangeFindError) -> ReadError {
+        match e {
+            RangeFindError::OffsetNotAppended => ReadError::NoSuchSegment,
+            RangeFindError::MessageExceededMaxBytes => {
+                ReadError::Io(io::Error::new(io::ErrorKind::InvalidInput,
+                                             "Message exceeded max byte size"))
+            }
         }
     }
 }
@@ -331,13 +336,7 @@ impl LogOptions {
 
 /// The commit log is an append-only sequence of messages.
 pub struct CommitLog {
-    closed_segments: BTreeMap<u64, Segment>,
-    closed_indexes: BTreeMap<u64, Index>,
-
-    active_segment: Segment,
-    active_index: Index,
-
-    options: LogOptions,
+    file_set: FileSet,
 }
 
 impl CommitLog {
@@ -347,121 +346,15 @@ impl CommitLog {
 
         info!("Opening log in directory {:?}", &opts.log_dir.to_str());
 
-        let (mut closed_segments, mut closed_indexes) = CommitLog::load_log(&opts.log_dir)?;
-
-        // try to reuse the last index if it is not full. otherwise, open a new index
-        // at the correct offset
-        let (ind, next_offset) = {
-            let last_ind = closed_indexes.values()
-                .next_back()
-                .and_then(|ind| {
-                    if ind.can_write() {
-                        Some(ind.starting_offset())
-                    } else {
-                        None
-                    }
-                });
-            match last_ind {
-                Some(starting_off) => {
-                    info!("Reusing index starting at offset {}", starting_off);
-                    // invariant: index exists in the closed_indexes BTree
-                    let ind = closed_indexes.remove(&starting_off).unwrap();
-                    let next_off = ind.last_entry()
-                        .map(|e| e.offset() + 1)
-                        .unwrap_or(starting_off);
-                    (ind, next_off)
-                }
-                None => {
-                    let next_off = closed_indexes.values()
-                        .next_back()
-                        .map(|ind| {
-                            let last_entry = ind.last_entry();
-                            assert!(last_entry.is_some());
-                            last_entry.unwrap().offset() + 1
-                        })
-                        .unwrap_or(0u64);
-                    info!("Starting new index at offset {}", next_off);
-                    let ind = Index::new(&opts.log_dir, next_off, opts.index_max_bytes)?;
-                    (ind, next_off)
-                }
-            }
-        };
-
-        // mark all closed indexes as readonly (indexes are not opened as readonly)
-        for ind in closed_indexes.values_mut() {
-            ind.set_readonly()?;
-        }
-
-        // reuse closed segment
-        let seg = match closed_segments.remove(&next_offset) {
-            Some(s) => s,
-            None => {
-                info!("Starting fresh segment {}", next_offset);
-                Segment::new(&opts.log_dir, next_offset, opts.log_max_bytes)?
-            }
-        };
-
-        Ok(CommitLog {
-            closed_segments: closed_segments,
-            closed_indexes: closed_indexes,
-
-            active_segment: seg,
-            active_index: ind,
-            options: opts,
-        })
-    }
-
-    fn load_log<P>(dir: P) -> io::Result<(BTreeMap<u64, Segment>, BTreeMap<u64, Index>)>
-        where P: AsRef<Path>
-    {
-        let mut segments = BTreeMap::new();
-        let mut indexes = BTreeMap::new();
-
-        let files = fs::read_dir(dir)?
-            // ignore Err results
-            .filter_map(|e| e.ok())
-            // ignore directories
-            .filter(|e| e.metadata().map(|m| m.is_file()).unwrap_or(false));
-
-        for f in files {
-            match f.path().extension() {
-                Some(ext) if segment::SEGMENT_FILE_NAME_EXTENSION.eq(ext) => {
-                    let segment = match Segment::open(f.path()) {
-                        Ok(seg) => seg,
-                        Err(e) => {
-                            error!("Unable to open segment {:?}: {}", f.path(), e);
-                            return Err(e);
-                        }
-                    };
-
-                    let offset = segment.starting_offset();
-                    segments.insert(offset, segment);
-                }
-                Some(ext) if index::INDEX_FILE_NAME_EXTENSION.eq(ext) => {
-                    let index = match Index::open(f.path()) {
-                        Ok(ind) => ind,
-                        Err(e) => {
-                            error!("Unable to open index {:?}: {}", f.path(), e);
-                            return Err(e);
-                        }
-                    };
-
-                    let offset = index.starting_offset();
-                    indexes.insert(offset, index);
-                    // TODO: fix missing index updates (crash before write to index)
-                }
-                _ => {}
-            }
-        }
-
-        Ok((segments, indexes))
+        let fs = FileSet::load_log(opts)?;
+        Ok(CommitLog { file_set: fs })
     }
 
     /// Appends a single message to the log, returning the offset appended.
     pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
         let mut buf = MessageBuf::default();
         buf.push(payload);
-        let res = try!(self.append(&mut buf));
+        let res = self.append(&mut buf)?;
         assert!(res.len() == 1);
         Ok(res.first())
     }
@@ -472,32 +365,17 @@ impl CommitLog {
     {
         // first write to the current segment
         // TODO: deal with message size > max file bytes?
-        let entries = self.active_segment
-            .append(buf)
-            .or_else(|e| {
+        let entry_res = self.file_set.active_segment_mut().append(buf);
+        let entries = entry_res.or_else(|e| {
                 match e {
                     // if the log is full, gracefully close the current segment
                     // and create new one starting from the new offset
                     SegmentAppendError::LogFull => {
-                        self.active_segment.flush_sync()?;
-                        let next_offset = self.active_segment.next_offset();
-
-                        info!("Starting new segment at offset {}", next_offset);
-
-                        let mut seg = Segment::new(&self.options.log_dir,
-                                                   next_offset,
-                                                   self.options.log_max_bytes)?;
-
-
-                        // set the active segment to the new segment,
-                        // swap in order to insert the segment into
-                        // the closed segments tree
-                        swap(&mut seg, &mut self.active_segment);
-                        self.closed_segments.insert(seg.starting_offset(), seg);
-
+                        try!(self.file_set.roll_segment());
 
                         // try again, giving up if we have to
-                        self.active_segment
+                        self.file_set
+                            .active_segment_mut()
                             .append(buf)
                             .map_err(|_| AppendError::FreshSegmentNotWritable)
                     }
@@ -507,27 +385,16 @@ impl CommitLog {
 
         // write to the index
         for meta in &entries {
-            self.active_index
-                .append(meta.offset, meta.file_pos)
-                .or_else(|e| {
+            let res = self.file_set.active_index_mut().append(meta.offset, meta.file_pos);
+            res.or_else(|e| {
                     match e {
                         // if the index is full, close the current index and open a new index
                         IndexWriteError::IndexFull => {
-                            info!("Starting new index at offset {}", meta.offset);
-
-                            try!(self.active_index.set_readonly());
-                            let mut ind = try!(Index::new(&self.options.log_dir,
-                                                          meta.offset,
-                                                          self.options.index_max_bytes));
-
-                            // set the active index to the new index,
-                            // swap in order to insert the index into
-                            // the closed index tree
-                            swap(&mut ind, &mut self.active_index);
-                            self.closed_indexes.insert(ind.starting_offset(), ind);
+                            try!(self.file_set.roll_index());
 
                             // if the new index cannot append, we're out of luck
-                            self.active_index
+                            self.file_set
+                                .active_index_mut()
                                 .append(meta.offset, meta.file_pos)
                                 .map_err(|_| AppendError::FreshIndexNotWritable)
                         }
@@ -539,117 +406,92 @@ impl CommitLog {
         // TODO: fix this with Option?
         match entries.first() {
             Some(v) => Ok(OffsetRange(v.offset, entries.len())),
-            None => Ok(OffsetRange(self.active_segment.next_offset(), 0)),
+            None => Ok(OffsetRange(self.file_set.active_segment().next_offset(), 0)),
         }
     }
 
     /// Gets the last written offset.
     pub fn last_offset(&self) -> Option<Offset> {
-        let next_off = self.active_segment.next_offset();
+        let next_off = self.file_set.active_segment().next_offset();
         if next_off == 0 {
             None
         } else {
-            Some(Offset(next_off - 1))
-        }
-    }
-
-    /// Reads a portion of the log, starting with the ReadPosition up to the limit.
-    pub fn read(&mut self, start: ReadPosition, limit: ReadLimit) -> Result<MessageBuf, ReadError> {
-        match start {
-            ReadPosition::Beginning => self.read_by_offset(0, limit),
-            ReadPosition::Offset(Offset(v)) => self.read_by_offset(v, limit),
-            ReadPosition::Position(log_pos) => {
-                self.read_by_position(log_pos.segment, log_pos.position, limit)
-            }
-        }
-    }
-
-    // TODO: expose log position for next read
-
-    fn read_by_position(&mut self,
-                        segment: u64,
-                        file_pos: u32,
-                        limit: ReadLimit)
-                        -> Result<MessageBuf, ReadError> {
-        // read from the active segment, if the read position offset matches
-        if self.active_segment.starting_offset() == segment {
-            return Ok(self.active_segment.read(file_pos, limit)?.0);
-        }
-
-        let mut seg_it = self.closed_segments
-            .range_mut(segment..);
-
-        let mut seg = match seg_it.next() {
-            Some(seg) => seg.1,
-            None => return Err(ReadError::InvalidLogPosition),
-        };
-
-        // because the log segment read at the end of the file will
-        // return the file position of the byte index 1 past the last
-        // byte (i.e. the size), we need to use the next segment to
-        // read
-        if file_pos >= seg.size() as u32 {
-            match seg_it.next() {
-                Some(seg) => Ok(seg.1.read(0, limit)?.0),
-                None => Ok(self.active_segment.read(0, limit)?.0),
-            }
-        } else {
-            Ok(seg.read(file_pos, limit)?.0)
+            Some(next_off - 1)
         }
     }
 
 
-    fn read_by_offset(&mut self,
-                      start_off: u64,
-                      limit: ReadLimit)
-                      -> Result<MessageBuf, ReadError> {
-        // find the file position from the index
-        let active_start_off = self.active_index.starting_offset();
-        let index_entry_res = if start_off >= active_start_off {
-            trace!("Reading offset {} from active index", start_off);
-            self.active_index.find(start_off)
-        } else {
-            trace!("Reading offset {} from old index", start_off);
-            let found_index = self.closed_indexes
-                .range(..(start_off + 1))
-                .next_back();
-            found_index.and_then(|(_, i)| i.find(start_off))
-        };
+    /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit.
+    #[inline]
+    pub fn read(&self, start: Offset, limit: ReadLimit) -> Result<MessageBuf, ReadError> {
+        self.reader::<MessageBufReader>(start, limit)
+    }
 
-        let file_pos = match index_entry_res {
-            Some(e) => e.file_position(),
+    /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit
+    /// via the reader.
+    pub fn reader<R: LogSliceReader>(&self, start: Offset, limit: ReadLimit) -> Result<R::Result, ReadError> {
+        // TODO: can this be caught at the index level insead?
+        if start >= self.file_set.active_segment().next_offset() {
+            return Ok(R::empty());
+        }
+
+        let max_bytes = limit.0 as u32;
+
+        // find the correct segment
+        let segment = match self.file_set.find_segment(start) {
+            Some(v) => v,
             None => {
-                info!("No index entry found for {}", start_off);
-                return Ok(MessageBuf::default());
+                warn!("No segment found for offset {}", start);
+                return Err(ReadError::NoSuchSegment);
             }
         };
 
-        // find the correct segment and read the log entry
-        let active_seg_start_off = self.active_segment.starting_offset();
+        let seg_bytes = segment.size() as u32;
 
-        if start_off >= active_seg_start_off {
-            trace!("Reading from active index at file pos {}", file_pos);
-            Ok(self.active_segment.read(file_pos, limit)?.0)
-        } else {
-            let mut r = self.closed_segments
-                .range_mut(..(start_off + 1));
-            match r.next_back() {
-                Some((_, ref mut s)) => {
-                    trace!("Reading messages from old index at file pos {}", file_pos);
-                    Ok(s.read(file_pos, limit)?.0)
-                }
-                _ => {
-                    warn!("No segment found for offset {}", start_off);
-                    Ok(MessageBuf::default())
-                }
+        let range = {
+            let index = match self.file_set.find_index(start) {
+                Some(v) => v,
+                None => return Err(ReadError::NoSuchSegment),
+            };
+
+            // grab the range from the contained index
+            let range = index.find_segment_range(start, max_bytes, seg_bytes)?;
+            if range.is_incomplete() {
+                // find the next index (ensure its actually the next index)
+                // and then read the first entry, which could complete the
+                // range of the read.
+                let next_entry = index.last_entry()
+                    .and_then(|p| self.file_set.find_index(p.offset() + 1))
+                    .and_then(|ind| if ind.starting_offset() == index.starting_offset() {
+                        None
+                    } else {
+                        ind.read_entry(0)
+                    });
+                range.complete(max_bytes, next_entry)?
+            } else {
+                range
             }
-        }
+        };
+
+        // if the range is STILL incomplete, theres a message that is larger than max_bytes
+        // and cannot be read
+        let (start_file_pos, bytes) = match range {
+            MessageSetRange::Slice { start, bytes } => (start.file_position(), bytes),
+            MessageSetRange::IncompleteSlice { .. } => {
+                error!("Could not find range of the log starting at offset {} with max bytes {}",
+                       start,
+                       max_bytes);
+                return Err(ReadError::NoSuchSegment);
+            }
+        };
+
+        Ok(segment.read_slice::<R>(start_file_pos, bytes)?)
     }
 
     /// Forces a flush of the log.
     pub fn flush(&mut self) -> io::Result<()> {
-        self.active_segment.flush_sync()?;
-        self.active_index.flush_sync()
+        self.file_set.active_segment_mut().flush_sync()?;
+        self.file_set.active_index_mut().flush_sync()
     }
 }
 
@@ -658,6 +500,7 @@ impl CommitLog {
 mod tests {
     use super::*;
     use super::testutil::*;
+    use super::message::*;
     use std::fs;
     use std::collections::HashSet;
     use env_logger;
@@ -667,20 +510,20 @@ mod tests {
         let range = OffsetRange(2, 6);
 
         assert_eq!(vec![2, 3, 4, 5, 6, 7],
-                   range.iter().map(|o| o.0).collect::<Vec<u64>>());
+                   range.iter().collect::<Vec<u64>>());
 
         assert_eq!(vec![7, 6, 5, 4, 3, 2],
-                   range.iter().rev().map(|o| o.0).collect::<Vec<u64>>());
+                   range.iter().rev().collect::<Vec<u64>>());
     }
 
     #[test]
     pub fn append() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
-        assert_eq!(log.append_msg("123456").unwrap(), Offset(0));
-        assert_eq!(log.append_msg("abcdefg").unwrap(), Offset(1));
-        assert_eq!(log.append_msg("foobarbaz").unwrap(), Offset(2));
-        assert_eq!(log.append_msg("bing").unwrap(), Offset(3));
+        assert_eq!(log.append_msg("123456").unwrap(), 0);
+        assert_eq!(log.append_msg("abcdefg").unwrap(), 1);
+        assert_eq!(log.append_msg("foobarbaz").unwrap(), 2);
+        assert_eq!(log.append_msg("bing").unwrap(), 3);
         log.flush().unwrap();
     }
 
@@ -696,10 +539,10 @@ mod tests {
             buf
         };
         let range = log.append(&mut buf).unwrap();
-        assert_eq!(0, range.first().0);
+        assert_eq!(0, range.first());
         assert_eq!(3, range.len());
         assert_eq!(vec![0, 1, 2],
-                   range.iter().map(|v| v.0).collect::<Vec<u64>>());
+                   range.iter().collect::<Vec<u64>>());
     }
 
 
@@ -786,117 +629,32 @@ mod tests {
 
         {
             let active_index_read =
-                log.read(ReadPosition::Offset(Offset(82)), ReadLimit::Messages(5)).unwrap();
-            assert_eq!(5, active_index_read.len());
-            assert_eq!(vec![82, 83, 84, 85, 86],
-                       active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
+                log.read(82, ReadLimit::max_bytes(168)).unwrap();
+            assert_eq!(6, active_index_read.len());
+            assert_eq!(vec![82, 83, 84, 85, 86, 87],
+                       active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
         }
 
         {
-            let old_index_read = log.read(ReadPosition::Offset(Offset(5)), ReadLimit::Messages(5))
-                .unwrap();
-            assert_eq!(5, old_index_read.len());
-            assert_eq!(vec![5, 6, 7, 8, 9],
-                       old_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
+            let old_index_read =
+                log.read(5, ReadLimit::max_bytes(112))
+                    .unwrap();
+            assert_eq!(4, old_index_read.len());
+            assert_eq!(vec![5, 6, 7, 8],
+                       old_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
         }
 
         // read at the boundary (not going to get full message limit)
         {
             // log rolls at offset 36
-            let boundary_read = log.read(ReadPosition::Offset(Offset(33)), ReadLimit::Messages(5))
-                .unwrap();
+            let boundary_read =
+                log.read(33, ReadLimit::max_bytes(100))
+                    .unwrap();
             assert_eq!(3, boundary_read.len());
             assert_eq!(vec![33, 34, 35],
-                       boundary_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
+                       boundary_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
         }
     }
-
-    // TODO: re-enable
-    // #[test]
-    // pub fn read_entries_from_position() {
-    //     env_logger::init().unwrap_or(());
-
-    //     let dir = TestDir::new();
-    //     let mut opts = LogOptions::new(&dir);
-    //     opts.index_max_items(20);
-    //     opts.segment_max_bytes(1000);
-    //     let mut log = CommitLog::new(opts).unwrap();
-
-    //     for i in 0..100 {
-    //         let s = format!("-data {}", i);
-    //         log.append_msg(s.as_str()).unwrap();
-    //     }
-    //     log.flush().unwrap();
-
-    //     {
-    //         let active_index_read =
-    //             log.read(ReadPosition::Offset(Offset(82)), ReadLimit::Messages(5)).unwrap();
-    //         assert_eq!(5, active_index_read.len());
-    //         assert_eq!(vec![82, 83, 84, 85, 86],
-    //                    active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-    //         let active_index_read =
-    //             log.read(ReadPosition::Position(active_index_read.next_read_position().unwrap()),
-    //                       ReadLimit::Messages(5))
-    //                 .unwrap();
-    //         assert_eq!(5, active_index_read.len());
-    //         assert_eq!(vec![87, 88, 89, 90, 91],
-    //                    active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-    //     }
-
-    //     {
-    //         let old_index_read = log.read(ReadPosition::Offset(Offset(5)), ReadLimit::Messages(5))
-    //             .unwrap();
-    //         assert_eq!(5, old_index_read.len());
-    //         assert_eq!(vec![5, 6, 7, 8, 9],
-    //                    old_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-
-    //         let old_index_read =
-    //             log.read(ReadPosition::Position(old_index_read.next_read_position().unwrap()),
-    //                       ReadLimit::Messages(5))
-    //                 .unwrap();
-    //         assert_eq!(5, old_index_read.len());
-    //         assert_eq!(vec![10, 11, 12, 13, 14],
-    //                    old_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-    //     }
-
-    //     // read at the boundary (not going to get full message limit)
-    //     {
-    //         // log rolls at offset 36
-    //         let boundary_read = log.read(ReadPosition::Offset(Offset(33)), ReadLimit::Messages(5))
-    //             .unwrap();
-    //         assert_eq!(3, boundary_read.len());
-    //         assert_eq!(vec![33, 34, 35],
-    //                    boundary_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-
-    //         // expect to read from next log
-    //         let old_index_read =
-    //             log.read(ReadPosition::Position(boundary_read.next_read_position().unwrap()),
-    //                       ReadLimit::Messages(5))
-    //                 .unwrap();
-    //         assert_eq!(5, old_index_read.len());
-    //         assert_eq!(vec![36, 37, 38, 39, 40],
-    //                    old_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-    //     }
-
-    //     // read at the boundary before active segment
-    //     {
-    //         // log rolls at offset 71
-    //         let boundary_read = log.read(ReadPosition::Offset(Offset(68)), ReadLimit::Messages(5))
-    //             .unwrap();
-    //         assert_eq!(3, boundary_read.len());
-    //         assert_eq!(vec![68, 69, 70],
-    //                    boundary_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-
-    //         // expect to read from next log
-    //         let active_seg_read =
-    //             log.read(ReadPosition::Position(boundary_read.next_read_position().unwrap()),
-    //                       ReadLimit::Messages(5))
-    //                 .unwrap();
-    //         assert_eq!(5, active_seg_read.len());
-    //         assert_eq!(vec![71, 72, 73, 74, 75],
-    //                    active_seg_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
-    //     }
-    // }
 
     #[test]
     pub fn reopen_log() {
@@ -912,7 +670,7 @@ mod tests {
 
             for i in 0..99 {
                 let s = format!("some data {}", i);
-                let Offset(off) = log.append_msg(s.as_str()).unwrap();
+                let off = log.append_msg(s.as_str()).unwrap();
                 assert_eq!(i, off);
             }
             log.flush().unwrap();
@@ -922,13 +680,13 @@ mod tests {
             let mut log = CommitLog::new(opts).unwrap();
 
             let active_index_read =
-                log.read(ReadPosition::Offset(Offset(82)), ReadLimit::Messages(5)).unwrap();
+                log.read(82, ReadLimit::max_bytes(130)).unwrap();
 
-            assert_eq!(5, active_index_read.len());
-            assert_eq!(vec![82, 83, 84, 85, 86],
-                       active_index_read.iter().map(|v| v.offset().0).collect::<Vec<_>>());
+            assert_eq!(4, active_index_read.len());
+            assert_eq!(vec![82, 83, 84, 85],
+                       active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
 
-            let Offset(off) = log.append_msg("moar data").unwrap();
+            let off = log.append_msg("moar data").unwrap();
             assert_eq!(99, off);
         }
     }

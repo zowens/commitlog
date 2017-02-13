@@ -1,6 +1,7 @@
 extern crate commitlog;
 
 use commitlog::*;
+use commitlog::message::*;
 use std::time::{self, SystemTime};
 
 fn main() {
@@ -17,7 +18,7 @@ fn main() {
     log.append_msg("second message").unwrap(); // offset 1
 
     // read the messages
-    let messages = log.read(ReadPosition::Beginning, ReadLimit::Messages(2)).unwrap();
+    let messages = log.read(0, ReadLimit::default()).unwrap();
     for msg in messages.iter() {
         println!("{} - {}",
                  msg.offset(),

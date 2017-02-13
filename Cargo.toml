@@ -1,7 +1,7 @@
 [package]
 authors = ["Zack Owens <zowens2009@gmail.com>"]
 name = "commitlog"
-version = "0.0.6"
+version = "0.0.7"
 description = "Implementation of an append-only commit log backed by disk."
 repository = "https://github.com/zowens/commitlog"
 homepage = "https://github.com/zowens/commitlog"
@@ -9,11 +9,11 @@ readme = "README.md"
 license = "MIT"
 
 [dependencies]
-byteorder = "0.5.3"
+byteorder = "1.0"
 seahash = "3.0.4"
 log = "0.3.6"
-memmap = "0.5.0"
+memmap = "0.5"
 
 [dev-dependencies]
-env_logger = "0.3.5"
+env_logger = "0.4"
 rand = "0.3"

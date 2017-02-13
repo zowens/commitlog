@@ -2,10 +2,11 @@ extern crate commitlog;
 extern crate env_logger;
 
 use commitlog::*;
+use commitlog::message::*;
 use std::time::{self, SystemTime};
 
 const BATCH_SIZE: u32 = 200;
-const BATCHES: u32 = 10000;
+const BATCHES: u32 = 10_000;
 
 fn main() {
     env_logger::init().unwrap();
@@ -37,22 +38,16 @@ fn main() {
     let start = SystemTime::now();
     let mut total = 0;
     let mut iterations = 0;
-    let mut pos = ReadPosition::Beginning;
+    let mut pos = 0;
     loop {
-        let entries = log.read(pos, ReadLimit::Bytes(10240))
+        let entries = log.read(pos, ReadLimit::max_bytes(10240))
             .expect("Unable to read messages from the log");
         match entries.iter().last().map(|m| m.offset()) {
             Some(off) => {
                 iterations += 1;
                 total += entries.len();
-                if let ReadPosition::Offset(Offset(prev)) = pos {
-                    assert!(prev < off.0);
-                }
-                // TODO: re-enable read position based on log file positions
-                // rather than offset
-                // pos = ReadPosition::Position(entries.next_read_position().unwrap());
-
-                pos = ReadPosition::Offset(Offset(off.0 + 1));
+                assert!(pos < off);
+                pos = off + 1;
             }
             None => {
                 let end = SystemTime::now();
