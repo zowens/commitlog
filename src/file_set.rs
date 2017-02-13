@@ -181,4 +181,9 @@ impl FileSet {
         self.closed_indexes.insert(ind.starting_offset(), ind);
         Ok(())
     }
+
+    //getter method to retrieve the max bytes set per message 
+    pub fn get_message_max_bytes(&self) -> usize {
+        self.opts.message_max_bytes
+    }
 }

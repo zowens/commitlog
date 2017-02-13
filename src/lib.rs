@@ -172,6 +172,9 @@ pub enum AppendError {
     /// during the append operation. This could point to exhaustion
     /// of machine resources or other I/O issue.
     FreshSegmentNotWritable,
+    /// If a message that is larger than the per message size is tried to be appended 
+    /// it will not be allowed an will return an error 
+    MessageSizeExceeded
 }
 
 impl From<io::Error> for AppendError {
@@ -186,9 +189,12 @@ impl error::Error for AppendError {
             AppendError::Io(_) => "File IO error occurred while appending to the log",
             AppendError::FreshIndexNotWritable => {
                 "While attempting to create a new index, the new index was not writabe"
-            }
+            },
             AppendError::FreshSegmentNotWritable => {
                 "While attempting to create a new segment, the new segment was not writabe"
+            },
+            AppendError::MessageSizeExceeded => {
+                "While attempting to write a message, the per message size was exceeded"
             }
         }
     }
@@ -207,6 +213,7 @@ impl fmt::Display for AppendError {
             AppendError::Io(_) => write!(f, "IO Error"),
             AppendError::FreshIndexNotWritable => write!(f, "Fresh index error"),
             AppendError::FreshSegmentNotWritable => write!(f, "Fresh segment error"),
+            AppendError::MessageSizeExceeded => write!(f, "Message Size exceeded error")
         }
     }
 }
@@ -301,6 +308,7 @@ pub struct LogOptions {
     log_dir: PathBuf,
     log_max_bytes: usize,
     index_max_bytes: usize,
+    message_max_bytes: usize
 }
 
 impl LogOptions {
@@ -309,6 +317,7 @@ impl LogOptions {
     /// The default values are:
     /// - *segment_max_bytes*: 1GB
     /// - *index_max_entries*: 100,000
+    /// - *message_max_bytes*: 1mb 
     pub fn new<P>(log_dir: P) -> LogOptions
         where P: AsRef<Path>
     {
@@ -316,6 +325,7 @@ impl LogOptions {
             log_dir: log_dir.as_ref().to_owned(),
             log_max_bytes: 1_000_000_000,
             index_max_bytes: 800_000,
+            message_max_bytes: 1000000
         }
     }
 
@@ -330,6 +340,13 @@ impl LogOptions {
     #[inline]
     pub fn index_max_items(&mut self, items: usize) -> &mut LogOptions {
         self.index_max_bytes = items * INDEX_ENTRY_BYTES;
+        self
+    }
+
+    /// Bounds the size of a message to a number of bytes.
+    #[inline]
+    pub fn message_max_bytes(&mut self, bytes: usize) -> &mut LogOptions {
+        self.message_max_bytes = bytes;
         self
     }
 }
@@ -363,6 +380,11 @@ impl CommitLog {
     pub fn append<T>(&mut self, buf: &mut T) -> Result<OffsetRange, AppendError>
         where T: MessageSetMut
     {
+        //Check if given message exceeded the max size 
+        if buf.bytes().len() > self.file_set.get_message_max_bytes() {
+            return Err(AppendError::MessageSizeExceeded)
+        }
+
         // first write to the current segment
         // TODO: deal with message size > max file bytes?
         let entry_res = self.file_set.active_segment_mut().append(buf);
@@ -714,4 +736,23 @@ mod tests {
             CommitLog::new(opts).expect("Should be able to reopen log without writes");
         }
     }
+
+    #[test]
+    pub fn append_message_greater_than_max() {
+        let dir = TestDir::new();
+        let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
+        //create vector with 1.2mb of size, u8 = 1 byte thus, 1mb = 1000000 bytes, 1200000 items needed 
+        let mut value = String::new();
+        let mut target = 0;
+        while target != 2000000 {
+            value.push_str("a");
+            target += 1;
+        }
+        let res = log.append_msg(value);
+        //println!("{:?}", res);
+        //will fail if no error is found which means a message greater than the limit passed through 
+        assert!(res.is_err());
+        log.flush().unwrap();
+    }
+
 }
