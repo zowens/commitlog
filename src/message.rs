@@ -83,6 +83,13 @@ impl<'a> Message<'a> {
         &self.bytes[20..]
     }
 
+    /// Check that the hash matches the hash of the payload.
+    #[inline]
+    pub fn verify_hash(&self) -> bool {
+        self.hash() == seahash::hash(self.payload())
+    }
+
+
     /// Serializes a new message into a buffer
     pub fn serialize<B: AsRef<[u8]>>(bytes: &mut Vec<u8>, offset: u64, payload: B) {
         let payload_slice = payload.as_ref();
@@ -146,6 +153,17 @@ pub trait MessageSet {
     /// Indicator of whether there are messages within the `MessageSet`.
     fn is_empty(&self) -> bool {
         self.bytes().is_empty()
+    }
+
+    /// Verifies the hashes of all the messages, returning the
+    /// index of a corrupt message when found.
+    fn verify_hashes(&self) -> Result<(), usize> {
+        for (i, msg) in self.iter().enumerate() {
+            if !msg.verify_hash() {
+                return Err(i);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -368,6 +386,7 @@ mod tests {
             assert_eq!(msg.hash(), 13331223911193280505);
             assert_eq!(msg.size(), 9u32);
             assert_eq!(msg.offset(), 100);
+            assert!(msg.verify_hash());
         }
         {
             let msg = msg_it.next().unwrap();
@@ -375,6 +394,7 @@ mod tests {
             assert_eq!(msg.hash(), 8467704495454493044);
             assert_eq!(msg.size(), 9u32);
             assert_eq!(msg.offset(), 101);
+            assert!(msg.verify_hash());
         }
 
         assert!(msg_it.next().is_none());
