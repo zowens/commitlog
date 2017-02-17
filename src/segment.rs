@@ -9,6 +9,14 @@ pub static SEGMENT_FILE_NAME_LEN: usize = 20;
 /// File extension for the segment file.
 pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
 
+/// Magic that appears in the header of the segment for version 1.
+///
+/// There are a couple reasons for the magic. The primary reason is
+/// to allow versioning, when the time comes. The second is to remove
+/// the possibility of a 0 offset within the index. This helps to identity
+/// the start of new index entries.
+pub static VERSION_1_MAGIC: [u8; 2] = [0xff, 0xff];
+
 enum SegmentMode {
     ReadWrite {
         /// current file position for the write
@@ -65,17 +73,20 @@ impl Segment {
             path_buf
         };
 
-        let f = OpenOptions::new().write(true)
+        let mut f = OpenOptions::new().write(true)
             .read(true)
             .create_new(true)
             .append(true)
             .open(&log_path)?;
 
+        // add the magic
+        f.write_all(&VERSION_1_MAGIC)?;
+
         Ok(Segment {
             file: f,
 
             mode: SegmentMode::ReadWrite {
-                write_pos: 0,
+                write_pos: 2,
                 next_offset: base_offset,
                 max_bytes: max_bytes,
             },
@@ -103,6 +114,7 @@ impl Segment {
 
 
         let meta = seg_file.metadata()?;
+        // TODO: check magic
 
         Ok(Segment {
             file: seg_file,
@@ -190,7 +202,7 @@ mod tests {
             assert_eq!(1, meta.len());
             let p0 = meta.iter().next().unwrap();
             assert_eq!(p0.offset, 0);
-            assert_eq!(p0.file_pos, 0);
+            assert_eq!(p0.file_pos, 2);
         }
 
         {
@@ -203,11 +215,11 @@ mod tests {
             let mut it = meta.iter();
             let p0 = it.next().unwrap();
             assert_eq!(p0.offset, 1);
-            assert_eq!(p0.file_pos, 25);
+            assert_eq!(p0.file_pos, 27);
 
             let p1 = it.next().unwrap();
             assert_eq!(p1.offset, 2);
-            assert_eq!(p1.file_pos, 50);
+            assert_eq!(p1.file_pos, 52);
         }
 
         f.flush_sync().unwrap();
@@ -255,7 +267,7 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read_slice::<MessageBufReader>(0, 83).unwrap();
+        let msgs = f.read_slice::<MessageBufReader>(2, 83).unwrap();
         assert_eq!(3, msgs.len());
 
         for (i, m) in msgs.iter().enumerate() {
@@ -277,7 +289,7 @@ mod tests {
         };
 
         // byte max contains message 0
-        let msgs = f.read_slice::<MessageBufReader>(0, meta[1].file_pos)
+        let msgs = f.read_slice::<MessageBufReader>(2, meta[1].file_pos - 2)
             .unwrap();
 
         assert_eq!(1, msgs.len());
@@ -296,7 +308,7 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read_slice::<MessageBufReader>(0, 83).unwrap();
+        let msgs = f.read_slice::<MessageBufReader>(2, 83).unwrap();
         assert_eq!(3, msgs.len());
 
         {
@@ -305,7 +317,7 @@ mod tests {
             f.append(&mut buf).unwrap();
         }
 
-        let msgs = f.read_slice::<MessageBufReader>(0, 106).unwrap();
+        let msgs = f.read_slice::<MessageBufReader>(2, 106).unwrap();
         assert_eq!(4, msgs.len());
 
         for (i, m) in msgs.iter().enumerate() {

@@ -15,7 +15,7 @@ pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
 #[inline]
 fn binary_search<F>(index: &[u8], f: F) -> usize
-    where F: Fn(usize, u32) -> Ordering
+    where F: Fn(u32) -> Ordering
 {
     assert!(index.len() % INDEX_ENTRY_BYTES == 0);
 
@@ -30,7 +30,7 @@ fn binary_search<F>(index: &[u8], f: F) -> usize
         let mi = m * INDEX_ENTRY_BYTES;
         let rel_off = LittleEndian::read_u32(&index[mi..mi + 4]);
 
-        match f(m, rel_off) {
+        match f(rel_off) {
             Ordering::Equal => return m,
             Ordering::Less => {
                 i = m + 1;
@@ -227,17 +227,16 @@ impl Index {
             if last_val == 0 {
                 // partial index, search for break point
                 INDEX_ENTRY_BYTES *
-                binary_search(index, |i, rel_off| {
-                    // if the relative offset is > 0 OR we're
-                    // at the first position (its assumed that the
-                    // file entry is 0) then go right
+                binary_search(index, |rel_off| {
+                    // if the relative offset is 0 then go to the left,
+                    // otherwise go to the right to find a slot with 0
                     //
-                    // otherwise, go left to find the first relative
-                    // offset equal to 0, but not the first
-                    if rel_off > 0 || i == 0 {
-                        Ordering::Less
-                    } else {
+                    // NOTE: it is assumed the segment will new start at 0
+                    // since it contains at least 1 byte of magic
+                    if rel_off == 0 {
                         Ordering::Greater
+                    } else {
+                        Ordering::Less
                     }
                 })
             } else {
@@ -327,7 +326,11 @@ impl Index {
     }
 
     pub fn last_entry(&self) -> Option<IndexEntry> {
-        self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
+        if self.next_write_pos == 0 {
+            None
+        } else {
+            self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
+        }
     }
 
     pub fn read_entry(&self, i: usize) -> Option<IndexEntry> {
@@ -498,7 +501,7 @@ impl Index {
         }
 
         let i = binary_search(&mem_slice[0..self.next_write_pos],
-                              |_, v| v.cmp(&rel_offset));
+                              |v| v.cmp(&rel_offset));
         trace!("Found offset {} at entry {}", offset, i);
 
         if i < self.next_write_pos / INDEX_ENTRY_BYTES {
