@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::fs::{OpenOptions, File};
 use std::{u64, usize};
 use std::cmp::Ordering;
+use super::Offset;
 
 /// Number of byes in each entry pair
 pub static INDEX_ENTRY_BYTES: usize = 8;
@@ -251,10 +252,6 @@ impl Index {
         })
     }
 
-    pub fn can_write(&self) -> bool {
-        self.mode == AccessMode::ReadWrite
-    }
-
     #[inline]
     pub fn starting_offset(&self) -> u64 {
         self.base_offset
@@ -267,7 +264,7 @@ impl Index {
 
     // TODO: use memremap on linux
     fn resize(&mut self) -> io::Result<()> {
-        // increase length by 50% += 8 for alignment
+        // increase length by 50% -= 7 for alignment
         let new_len = {
             let l = self.size();
             let new_size = l + (l / 2);
@@ -337,6 +334,15 @@ impl Index {
             None
         } else {
             self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
+        }
+    }
+
+    pub fn next_offset(&self) -> Offset {
+        if self.next_write_pos == 0 {
+            self.base_offset
+        } else {
+            let entry = self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1).unwrap();
+            entry.offset() + 1
         }
     }
 
@@ -564,7 +570,7 @@ mod tests {
         // set_readonly it
         index.set_readonly().expect("Unable to set readonly");
 
-        assert!(!index.can_write());
+        assert_eq!(AccessMode::Read, index.mode);
 
         let e1 = index.read_entry(1).unwrap();
         assert_eq!(2u32, e1.relative_offset());
@@ -739,7 +745,7 @@ mod tests {
             assert_eq!(2, last_entry.file_position());
 
             // assert_eq!(16, index.size());
-            assert!(index.can_write());
+            assert_eq!(AccessMode::ReadWrite, index.mode);
         }
     }
 

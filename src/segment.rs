@@ -3,6 +3,7 @@ use std::fs::{OpenOptions, File};
 use std::io::{self, Write};
 use super::message::*;
 use super::reader::*;
+use super::Offset;
 
 /// Number of bytes contained in the base name of the file.
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
@@ -17,34 +18,20 @@ pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
 /// the start of new index entries.
 pub static VERSION_1_MAGIC: [u8; 2] = [0xff, 0xff];
 
-enum SegmentMode {
-    ReadWrite {
-        /// current file position for the write
-        write_pos: usize,
-
-        /// Next offset of the log
-        next_offset: u64,
-
-        /// Maximum number of bytes permitted to be appended to the log
-        max_bytes: usize,
-    },
-    Read {
-        /// Cached size of the file
-        file_size: usize,
-    },
-}
-
-
 /// A segment is a portion of the commit log. Segments are append-only logs written
 /// until the maximum size is reached.
 pub struct Segment {
     /// File descriptor
     file: File,
 
-    mode: SegmentMode,
-
     /// Base offset of the log
     base_offset: u64,
+
+    /// current file position for the write
+    write_pos: usize,
+
+    /// Maximum number of bytes permitted to be appended to the log
+    max_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -84,24 +71,19 @@ impl Segment {
 
         Ok(Segment {
             file: f,
-
-            mode: SegmentMode::ReadWrite {
-                write_pos: 2,
-                next_offset: base_offset,
-                max_bytes: max_bytes,
-            },
             base_offset: base_offset,
+            write_pos: 2,
+            max_bytes: max_bytes,
         })
     }
 
-    pub fn open<P>(seg_path: P) -> io::Result<Segment>
+    pub fn open<P>(seg_path: P, max_bytes: usize) -> io::Result<Segment>
         where P: AsRef<Path>
     {
         let seg_file = OpenOptions::new().read(true)
             .write(true)
             .append(true)
             .open(&seg_path)?;
-
 
         let filename = seg_path.as_ref().file_name().unwrap().to_str().unwrap();
         let base_offset = match u64::from_str_radix(&filename[0..SEGMENT_FILE_NAME_LEN], 10) {
@@ -116,25 +98,18 @@ impl Segment {
         let meta = seg_file.metadata()?;
         // TODO: check magic
 
+        info!("Opened segment {}", filename);
+
         Ok(Segment {
             file: seg_file,
-            mode: SegmentMode::Read { file_size: meta.len() as usize },
+            write_pos: meta.len() as usize,
             base_offset: base_offset,
+            max_bytes: max_bytes,
         })
     }
 
-    pub fn next_offset(&self) -> u64 {
-        match self.mode {
-            SegmentMode::ReadWrite { next_offset, .. } => next_offset,
-            _ => 0,
-        }
-    }
-
     pub fn size(&self) -> usize {
-        match self.mode {
-            SegmentMode::ReadWrite { write_pos, .. } => write_pos as usize,
-            SegmentMode::Read { file_size } => file_size,
-        }
+        self.write_pos
     }
 
     #[inline]
@@ -143,29 +118,19 @@ impl Segment {
     }
 
     pub fn append<T: MessageSetMut>(&mut self,
-                                    payload: &mut T)
+                                    payload: &mut T,
+                                    starting_offset: Offset)
                                     -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
-        let (write_pos, off, max_bytes) = match self.mode {
-            SegmentMode::ReadWrite { write_pos, next_offset, max_bytes } => {
-                (write_pos, next_offset, max_bytes)
-            }
-            _ => return Err(SegmentAppendError::LogFull),
-        };
-
         // ensure we have the capacity
         let payload_len = payload.bytes().len();
-        if payload_len + write_pos > max_bytes {
+        if payload_len + self.write_pos > self.max_bytes {
             return Err(SegmentAppendError::LogFull);
         }
 
-        let meta = super::message::set_offsets(payload, off, write_pos);
+        let meta = super::message::set_offsets(payload, starting_offset, self.write_pos);
 
         self.file.write_all(payload.bytes())?;
-        self.mode = SegmentMode::ReadWrite {
-            write_pos: write_pos + payload_len,
-            next_offset: meta.iter().next_back().unwrap().offset + 1,
-            max_bytes: max_bytes,
-        };
+        self.write_pos += payload_len;
         Ok(meta)
     }
 
@@ -197,11 +162,11 @@ mod tests {
         {
             let mut buf = MessageBuf::default();
             buf.push("12345");
-            let meta = f.append(&mut buf).unwrap();
+            let meta = f.append(&mut buf, 5).unwrap();
 
             assert_eq!(1, meta.len());
             let p0 = meta.iter().next().unwrap();
-            assert_eq!(p0.offset, 0);
+            assert_eq!(p0.offset, 5);
             assert_eq!(p0.file_pos, 2);
         }
 
@@ -209,16 +174,16 @@ mod tests {
             let mut buf = MessageBuf::default();
             buf.push("66666");
             buf.push("77777");
-            let meta = f.append(&mut buf).unwrap();
+            let meta = f.append(&mut buf, 6).unwrap();
             assert_eq!(2, meta.len());
 
             let mut it = meta.iter();
             let p0 = it.next().unwrap();
-            assert_eq!(p0.offset, 1);
+            assert_eq!(p0.offset, 6);
             assert_eq!(p0.file_pos, 27);
 
             let p1 = it.next().unwrap();
-            assert_eq!(p1.offset, 2);
+            assert_eq!(p1.offset, 7);
             assert_eq!(p1.file_pos, 52);
         }
 
@@ -234,7 +199,7 @@ mod tests {
             let mut buf = MessageBuf::default();
             buf.push("12345");
             buf.push("66666");
-            f.append(&mut buf).unwrap();
+            f.append(&mut buf, 0).unwrap();
             f.flush_sync().unwrap();
         }
 
@@ -245,7 +210,7 @@ mod tests {
             path_buf.push(format!("{:020}", 0));
             path_buf.set_extension(SEGMENT_FILE_NAME_EXTENSION);
 
-            let res = Segment::open(&path_buf);
+            let res = Segment::open(&path_buf, 1024);
             assert!(res.is_ok(), "Err {:?}", res.err());
 
             let f = res.unwrap();
@@ -264,7 +229,7 @@ mod tests {
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
-            f.append(&mut buf).unwrap();
+            f.append(&mut buf, 0).unwrap();
         }
 
         let msgs = f.read_slice::<MessageBufReader>(2, 83).unwrap();
@@ -285,7 +250,7 @@ mod tests {
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
-            f.append(&mut buf).unwrap()
+            f.append(&mut buf, 0).unwrap()
         };
 
         // byte max contains message 0
@@ -305,7 +270,7 @@ mod tests {
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
-            f.append(&mut buf).unwrap();
+            f.append(&mut buf, 0).unwrap();
         }
 
         let msgs = f.read_slice::<MessageBufReader>(2, 83).unwrap();
@@ -314,7 +279,7 @@ mod tests {
         {
             let mut buf = MessageBuf::default();
             buf.push("foo");
-            f.append(&mut buf).unwrap();
+            f.append(&mut buf, 3).unwrap();
         }
 
         let msgs = f.read_slice::<MessageBufReader>(2, 106).unwrap();
@@ -335,7 +300,7 @@ mod tests {
         b.iter(|| {
             let mut buf = MessageBuf::default();
             buf.push(payload);
-            seg.append(&mut buf).unwrap();
+            seg.append(&mut buf, 0).unwrap();
         });
     }
 }

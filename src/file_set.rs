@@ -10,8 +10,7 @@ use super::LogOptions;
 pub struct FileSet {
     active_index: Index,
     active_segment: Segment,
-    closed_indexes: BTreeMap<u64, Index>,
-    closed_segments: BTreeMap<u64, Segment>,
+    closed: BTreeMap<u64, (Index, Segment)>,
     opts: LogOptions,
 }
 
@@ -29,7 +28,7 @@ impl FileSet {
         for f in files {
             match f.path().extension() {
                 Some(ext) if SEGMENT_FILE_NAME_EXTENSION.eq(ext) => {
-                    let segment = match Segment::open(f.path()) {
+                    let segment = match Segment::open(f.path(), opts.log_max_bytes) {
                         Ok(seg) => seg,
                         Err(e) => {
                             error!("Unable to open segment {:?}: {}", f.path(), e);
@@ -57,61 +56,44 @@ impl FileSet {
             }
         }
 
+        // pair up the index and segments (there should be an index per segment)
+        let mut closed = segments.into_iter()
+            .map(move |(i, s)| {
+                match indexes.remove(&i) {
+                    Some(v) => (i, (v, s)),
+                    None => {
+                        // TODO: create the index from the segment
+                        panic!("No index found for segment starting at {}", i);
+                    },
+                }
+            })
+            .collect::<BTreeMap<u64, (Index, Segment)>>();
+
         // try to reuse the last index if it is not full. otherwise, open a new index
         // at the correct offset
-        let (ind, next_offset) = {
-            let last_ind = indexes.values()
-                .next_back()
-                .and_then(|ind| if ind.can_write() {
-                    Some(ind.starting_offset())
-                } else {
-                    None
-                });
-            match last_ind {
-                Some(starting_off) => {
-                    info!("Reusing index starting at offset {}", starting_off);
-                    // invariant: index exists in the closed_indexes BTree
-                    let ind = indexes.remove(&starting_off).unwrap();
-                    let next_off = ind.last_entry()
-                        .map(|e| e.offset() + 1)
-                        .unwrap_or(starting_off);
-                    (ind, next_off)
-                }
-                None => {
-                    let next_off = indexes.values()
-                        .next_back()
-                        .map(|ind| {
-                            let last_entry = ind.last_entry();
-                            assert!(last_entry.is_some());
-                            last_entry.unwrap().offset() + 1
-                        })
-                        .unwrap_or(0u64);
-                    info!("Starting new index at offset {}", next_off);
-                    let ind = Index::new(&opts.log_dir, next_off, opts.index_max_bytes)?;
-                    (ind, next_off)
-                }
+        let last_entry = closed.keys().next_back().map(|v| *v);
+        let (ind, seg) = match last_entry {
+            Some(off) => {
+                info!("Reusing index and segment starting at offset {}", off);
+                closed.remove(&off).unwrap()
+            }
+            None => {
+                info!("Starting new index and segment at offset 0");
+                let ind = Index::new(&opts.log_dir, 0, opts.index_max_bytes)?;
+                let seg = Segment::new(&opts.log_dir, 0, opts.log_max_bytes)?;;
+                (ind, seg)
             }
         };
 
         // mark all closed indexes as readonly (indexes are not opened as readonly)
-        for ind in indexes.values_mut() {
+        for &mut (ref mut ind, _) in closed.values_mut() {
             ind.set_readonly()?;
         }
-
-        // reuse closed segment
-        let seg = match segments.remove(&next_offset) {
-            Some(s) => s,
-            None => {
-                info!("Starting fresh segment {}", next_offset);
-                Segment::new(&opts.log_dir, next_offset, opts.log_max_bytes)?
-            }
-        };
 
         Ok(FileSet {
             active_index: ind,
             active_segment: seg,
-            closed_indexes: indexes,
-            closed_segments: segments,
+            closed: closed,
             opts: opts,
         })
     }
@@ -120,12 +102,12 @@ impl FileSet {
         &mut self.active_segment
     }
 
-    pub fn active_segment(&self) -> &Segment {
-        &self.active_segment
-    }
-
     pub fn active_index_mut(&mut self) -> &mut Index {
         &mut self.active_index
+    }
+
+    pub fn active_index(&self) -> &Index {
+        &self.active_index
     }
 
     pub fn find_segment(&self, offset: u64) -> Option<&Segment> {
@@ -135,7 +117,7 @@ impl FileSet {
                    offset);
             Some(&self.active_segment)
         } else {
-            self.closed_segments.range(..(offset + 1)).next_back().map(|p| p.1)
+            self.closed.range(..(offset + 1)).next_back().map(|p| &(p.1).1)
         }
     }
 
@@ -146,44 +128,30 @@ impl FileSet {
                    offset);
             Some(&self.active_index)
         } else {
-            self.closed_indexes.range(..(offset + 1)).next_back().map(|p| p.1)
+            self.closed.range(..(offset + 1)).next_back().map(|p| &(p.1).0)
         }
     }
 
     pub fn roll_segment(&mut self) -> io::Result<()> {
         self.active_segment.flush_sync()?;
-        let next_offset = self.active_segment.next_offset();
+        self.active_index.set_readonly()?;
 
-        info!("Starting new segment at offset {}", next_offset);
+        let next_offset = self.active_index.next_offset();
+
+        info!("Starting new segment and index at offset {}", next_offset);
 
         let mut seg = Segment::new(&self.opts.log_dir, next_offset, self.opts.log_max_bytes)?;
+        let mut ind = Index::new(&self.opts.log_dir, next_offset, self.opts.index_max_bytes)?;
 
-        // set the active segment to the new segment,
-        // swap in order to insert the segment into
-        // the closed segments tree
+        // set the segment and index to the new active index/seg
         swap(&mut seg, &mut self.active_segment);
-        self.closed_segments.insert(seg.starting_offset(), seg);
-        Ok(())
-    }
-
-    pub fn roll_index(&mut self) -> io::Result<()> {
-        try!(self.active_index.set_readonly());
-
-        let offset = self.active_index.last_entry().unwrap().offset() + 1;
-        info!("Starting new index at offset {}", offset);
-
-        let mut ind = Index::new(&self.opts.log_dir, offset, self.opts.index_max_bytes)?;
-
-        // set the active index to the new index,
-        // swap in order to insert the index into
-        // the closed index tree
         swap(&mut ind, &mut self.active_index);
-        self.closed_indexes.insert(ind.starting_offset(), ind);
+
+        self.closed.insert(seg.starting_offset(), (ind, seg));
         Ok(())
     }
 
-    //getter method to retrieve the max bytes set per message 
-    pub fn get_message_max_bytes(&self) -> usize {
-        self.opts.message_max_bytes
+    pub fn log_options(&self) -> &LogOptions {
+        &self.opts
     }
 }

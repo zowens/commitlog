@@ -381,13 +381,13 @@ impl CommitLog {
         where T: MessageSetMut
     {
         //Check if given message exceeded the max size
-        if buf.bytes().len() > self.file_set.get_message_max_bytes() {
+        if buf.bytes().len() > self.file_set.log_options().message_max_bytes {
             return Err(AppendError::MessageSizeExceeded)
         }
 
         // first write to the current segment
-        // TODO: deal with message size > max file bytes?
-        let entry_res = self.file_set.active_segment_mut().append(buf);
+        let start_off = self.file_set.active_index().next_offset();
+        let entry_res = self.file_set.active_segment_mut().append(buf, start_off);
         let entries = entry_res.or_else(|e| {
                 match e {
                     // if the log is full, gracefully close the current segment
@@ -398,7 +398,7 @@ impl CommitLog {
                         // try again, giving up if we have to
                         self.file_set
                             .active_segment_mut()
-                            .append(buf)
+                            .append(buf, start_off)
                             .map_err(|_| AppendError::FreshSegmentNotWritable)
                     }
                     SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
@@ -414,13 +414,13 @@ impl CommitLog {
         // TODO: fix this with Option?
         match entries.first() {
             Some(v) => Ok(OffsetRange(v.offset, entries.len())),
-            None => Ok(OffsetRange(self.file_set.active_segment().next_offset(), 0)),
+            None => Ok(OffsetRange(start_off, 0)),
         }
     }
 
     /// Gets the last written offset.
     pub fn last_offset(&self) -> Option<Offset> {
-        let next_off = self.file_set.active_segment().next_offset();
+        let next_off = self.file_set.active_index().next_offset();
         if next_off == 0 {
             None
         } else {
@@ -439,7 +439,7 @@ impl CommitLog {
     /// via the reader.
     pub fn reader<R: LogSliceReader>(&self, start: Offset, limit: ReadLimit) -> Result<R::Result, ReadError> {
         // TODO: can this be caught at the index level insead?
-        if start >= self.file_set.active_segment().next_offset() {
+        if start >= self.file_set.active_index().next_offset() {
             return Ok(R::empty());
         }
 
