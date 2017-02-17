@@ -172,8 +172,8 @@ pub enum AppendError {
     /// during the append operation. This could point to exhaustion
     /// of machine resources or other I/O issue.
     FreshSegmentNotWritable,
-    /// If a message that is larger than the per message size is tried to be appended 
-    /// it will not be allowed an will return an error 
+    /// If a message that is larger than the per message size is tried to be appended
+    /// it will not be allowed an will return an error
     MessageSizeExceeded
 }
 
@@ -317,7 +317,7 @@ impl LogOptions {
     /// The default values are:
     /// - *segment_max_bytes*: 1GB
     /// - *index_max_entries*: 100,000
-    /// - *message_max_bytes*: 1mb 
+    /// - *message_max_bytes*: 1mb
     pub fn new<P>(log_dir: P) -> LogOptions
         where P: AsRef<Path>
     {
@@ -380,7 +380,7 @@ impl CommitLog {
     pub fn append<T>(&mut self, buf: &mut T) -> Result<OffsetRange, AppendError>
         where T: MessageSetMut
     {
-        //Check if given message exceeded the max size 
+        //Check if given message exceeded the max size
         if buf.bytes().len() > self.file_set.get_message_max_bytes() {
             return Err(AppendError::MessageSizeExceeded)
         }
@@ -407,22 +407,8 @@ impl CommitLog {
 
         // write to the index
         for meta in &entries {
-            let res = self.file_set.active_index_mut().append(meta.offset, meta.file_pos);
-            res.or_else(|e| {
-                    match e {
-                        // if the index is full, close the current index and open a new index
-                        IndexWriteError::IndexFull => {
-                            try!(self.file_set.roll_index());
-
-                            // if the new index cannot append, we're out of luck
-                            self.file_set
-                                .active_index_mut()
-                                .append(meta.offset, meta.file_pos)
-                                .map_err(|_| AppendError::FreshIndexNotWritable)
-                        }
-                        IndexWriteError::OffsetLessThanBase => unreachable!(),
-                    }
-                })?;
+            // TODO: what happens when this errors out? Do we truncate the log...?
+            self.file_set.active_index_mut().append(meta.offset, meta.file_pos)?;
         }
 
         // TODO: fix this with Option?
@@ -590,45 +576,13 @@ mod tests {
             .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
             .collect::<HashSet<String>>();
 
+        // TODO: should be a new index too!
         let expected =
             ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.log"]
                 .iter()
                 .cloned()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>();
-
-        assert_eq!(files.intersection(&expected).count(), 3);
-    }
-
-    #[test]
-    pub fn append_new_index() {
-        let dir = TestDir::new();
-        let mut opts = LogOptions::new(&dir);
-        opts.index_max_items(2);
-
-        {
-            let mut log = CommitLog::new(opts).unwrap();
-            // first 2 entries fit
-            log.append_msg("0123456789").unwrap();
-            log.append_msg("0123456789").unwrap();
-
-            // this one should roll the index, but not the segment
-            log.append_msg("0123456789").unwrap();
-            log.flush().unwrap();
-        }
-
-        let files = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
-            .collect::<HashSet<String>>();
-
-        let expected = ["00000000000000000000.index",
-                        "00000000000000000000.log",
-                        "00000000000000000002.index"]
-            .iter()
-            .cloned()
-            .map(|s| s.to_string())
-            .collect::<HashSet<String>>();
 
         assert_eq!(files.intersection(&expected).count(), 3);
     }
@@ -741,7 +695,7 @@ mod tests {
     pub fn append_message_greater_than_max() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
-        //create vector with 1.2mb of size, u8 = 1 byte thus, 1mb = 1000000 bytes, 1200000 items needed 
+        //create vector with 1.2mb of size, u8 = 1 byte thus, 1mb = 1000000 bytes, 1200000 items needed
         let mut value = String::new();
         let mut target = 0;
         while target != 2000000 {
@@ -750,7 +704,7 @@ mod tests {
         }
         let res = log.append_msg(value);
         //println!("{:?}", res);
-        //will fail if no error is found which means a message greater than the limit passed through 
+        //will fail if no error is found which means a message greater than the limit passed through
         assert!(res.is_err());
         log.flush().unwrap();
     }

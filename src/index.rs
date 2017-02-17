@@ -152,12 +152,6 @@ impl IndexEntry {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum IndexWriteError {
-    IndexFull,
-    OffsetLessThanBase,
-}
-
 impl Index {
     pub fn new<P>(log_dir: P, base_offset: u64, file_bytes: usize) -> io::Result<Index>
         where P: AsRef<Path>
@@ -258,8 +252,7 @@ impl Index {
     }
 
     pub fn can_write(&self) -> bool {
-        self.mode == AccessMode::ReadWrite &&
-        self.size() >= (self.next_write_pos + INDEX_ENTRY_BYTES)
+        self.mode == AccessMode::ReadWrite
     }
 
     #[inline]
@@ -272,17 +265,32 @@ impl Index {
         self.mmap.len()
     }
 
-    pub fn append(&mut self, abs_offset: u64, position: u32) -> Result<(), IndexWriteError> {
+    // TODO: use memremap on linux
+    fn resize(&mut self) -> io::Result<()> {
+        // increase length by 50% += 8 for alignment
+        let new_len = {
+            let l = self.size();
+            let new_size = l + (l / 2);
+            // align to byte size
+            new_size - (new_size % INDEX_ENTRY_BYTES)
+        };
+
+        // unmap the file (Set to dummy anonymous map)
+        self.mmap = Mmap::anonymous(32, Protection::ReadWrite)?.into_view_sync();
+        self.file.set_len(new_len as u64)?;
+        self.mmap = Mmap::open(&self.file, Protection::ReadWrite)?.into_view_sync();
+        Ok(())
+    }
+
+    pub fn append(&mut self, abs_offset: u64, position: u32) -> io::Result<()> {
         trace!("Index append {} => {}", abs_offset, position);
 
-        assert!(abs_offset >= self.base_offset);
+        assert!(abs_offset >= self.base_offset, "Attempt to append to an offset before base offset in index");
+        assert!(self.mode == AccessMode::ReadWrite, "Attempt to append to readonly index");
 
-        if !self.can_write() {
-            return Err(IndexWriteError::IndexFull);
-        }
-
-        if abs_offset < self.base_offset {
-            return Err(IndexWriteError::OffsetLessThanBase);
+        // check if we need to resize
+        if self.size() < (self.next_write_pos + INDEX_ENTRY_BYTES) {
+            self.resize()?;
         }
 
         unsafe {
@@ -294,7 +302,6 @@ impl Index {
             LittleEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
 
             self.next_write_pos += 8;
-
             Ok(())
         }
     }
@@ -557,10 +564,7 @@ mod tests {
         // set_readonly it
         index.set_readonly().expect("Unable to set readonly");
 
-        // append should fail with insertion error
-        assert_eq!(index.append(13u64, 0xeeeeee),
-                   Err(IndexWriteError::IndexFull));
-
+        assert!(!index.can_write());
 
         let e1 = index.read_entry(1).unwrap();
         assert_eq!(2u32, e1.relative_offset());
@@ -755,7 +759,6 @@ mod tests {
             index_path.push(&dir);
             index_path.push("00000000000000000010.index");
             let index = Index::open(&index_path).unwrap();
-            assert!(!index.can_write());
 
             let e0 = index.find(10);
             assert!(e0.is_some());
@@ -911,6 +914,26 @@ mod tests {
         };
         assert_eq!(Err(RangeFindError::MessageExceededMaxBytes),
                    incomplete_same_slice.complete(50, None));
+    }
+
+    #[test]
+    fn index_resize() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 32usize).unwrap();
+        assert_eq!(32, index.size());
+        index.append(10, 10).unwrap();
+        index.append(11, 20).unwrap();
+        index.append(12, 30).unwrap();
+        index.append(13, 40).unwrap();
+        assert_eq!(32, index.size());
+
+        assert!(index.append(14, 50).is_ok());
+
+        // make sure the index was resized
+        assert_eq!(48, index.size());
+
+        assert_eq!(50, index.find(14).unwrap().file_position());
     }
 
     #[bench]
