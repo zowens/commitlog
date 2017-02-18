@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use super::message::*;
 use super::reader::*;
 use super::Offset;
+use std::os::unix::fs::FileExt;
 
 /// Number of bytes contained in the base name of the file.
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
@@ -96,7 +97,17 @@ impl Segment {
 
 
         let meta = seg_file.metadata()?;
-        // TODO: check magic
+
+        // check the magic
+        {
+            let mut bytes = [0u8; 2];
+            let size = seg_file.read_at(&mut bytes, 0)?;
+            if size < 2 || &bytes != &VERSION_1_MAGIC {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                          format!("Segment file {} does not contain Version 1 magic",
+                                          filename)));
+            }
+        }
 
         info!("Opened segment {}", filename);
 
