@@ -386,7 +386,7 @@ impl CommitLog {
         }
 
         // first write to the current segment
-        let start_off = self.file_set.active_index().next_offset();
+        let start_off = self.file_set.active_index_mut().next_offset();
         let entry_res = self.file_set.active_segment_mut().append(buf, start_off);
         let entries = entry_res.or_else(|e| {
                 match e {
@@ -449,7 +449,7 @@ impl CommitLog {
         let max_bytes = limit.0 as u32;
 
         // find the correct segment
-        let segment = match self.file_set.find_segment(start) {
+        let &(ref ind, ref seg) = match self.file_set.find(start) {
             Some(v) => v,
             None => {
                 warn!("No segment found for offset {}", start);
@@ -457,19 +457,11 @@ impl CommitLog {
             }
         };
 
-        let seg_bytes = segment.size() as u32;
+        let seg_bytes = seg.size() as u32;
 
-        let range = {
-            let index = match self.file_set.find_index(start) {
-                Some(v) => v,
-                None => return Err(ReadError::NoSuchSegment),
-            };
-
-            // grab the range from the contained index
-            index.find_segment_range(start, max_bytes, seg_bytes)?
-        };
-
-        Ok(segment.read_slice::<R>(range.file_position(), range.bytes())?)
+        // grab the range from the contained index
+        let range = ind.find_segment_range(start, max_bytes, seg_bytes)?;
+        Ok(seg.read_slice::<R>(range.file_position(), range.bytes())?)
     }
 
     /// Forces a flush of the log.

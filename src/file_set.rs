@@ -8,8 +8,7 @@ use super::segment::*;
 use super::LogOptions;
 
 pub struct FileSet {
-    active_index: Index,
-    active_segment: Segment,
+    active: (Index, Segment),
     closed: BTreeMap<u64, (Index, Segment)>,
     opts: LogOptions,
 }
@@ -71,7 +70,7 @@ impl FileSet {
 
         // try to reuse the last index if it is not full. otherwise, open a new index
         // at the correct offset
-        let last_entry = closed.keys().next_back().map(|v| *v);
+        let last_entry = closed.keys().next_back().cloned();
         let (ind, seg) = match last_entry {
             Some(off) => {
                 info!("Reusing index and segment starting at offset {}", off);
@@ -91,63 +90,51 @@ impl FileSet {
         }
 
         Ok(FileSet {
-            active_index: ind,
-            active_segment: seg,
+            active: (ind, seg),
             closed: closed,
             opts: opts,
         })
     }
 
     pub fn active_segment_mut(&mut self) -> &mut Segment {
-        &mut self.active_segment
+        &mut self.active.1
     }
 
     pub fn active_index_mut(&mut self) -> &mut Index {
-        &mut self.active_index
+        &mut self.active.0
     }
 
     pub fn active_index(&self) -> &Index {
-        &self.active_index
+        &self.active.0
     }
 
-    pub fn find_segment(&self, offset: u64) -> Option<&Segment> {
-        let active_seg_start_off = self.active_segment.starting_offset();
-        if offset >= active_seg_start_off {
-            trace!("Segment is contained in the active segment for offset {}",
-                   offset);
-            Some(&self.active_segment)
-        } else {
-            self.closed.range(..(offset + 1)).next_back().map(|p| &(p.1).1)
-        }
-    }
-
-    pub fn find_index(&self, offset: u64) -> Option<&Index> {
-        let active_seg_start_off = self.active_index.starting_offset();
+    pub fn find(&self, offset: u64) -> Option<&(Index, Segment)> {
+        let active_seg_start_off = self.active.0.starting_offset();
         if offset >= active_seg_start_off {
             trace!("Index is contained in the active index for offset {}",
                    offset);
-            Some(&self.active_index)
+            Some(&self.active)
         } else {
-            self.closed.range(..(offset + 1)).next_back().map(|p| &(p.1).0)
+            self.closed.range(..(offset + 1)).next_back().map(|p| p.1)
         }
     }
 
     pub fn roll_segment(&mut self) -> io::Result<()> {
-        self.active_segment.flush_sync()?;
-        self.active_index.set_readonly()?;
+        self.active.0.set_readonly()?;
+        self.active.1.flush_sync()?;
 
-        let next_offset = self.active_index.next_offset();
+        let next_offset = self.active.0.next_offset();
 
         info!("Starting new segment and index at offset {}", next_offset);
 
-        let mut seg = Segment::new(&self.opts.log_dir, next_offset, self.opts.log_max_bytes)?;
-        let mut ind = Index::new(&self.opts.log_dir, next_offset, self.opts.index_max_bytes)?;
-
         // set the segment and index to the new active index/seg
-        swap(&mut seg, &mut self.active_segment);
-        swap(&mut ind, &mut self.active_index);
-
-        self.closed.insert(seg.starting_offset(), (ind, seg));
+        let mut p = {
+            let seg = Segment::new(&self.opts.log_dir, next_offset, self.opts.log_max_bytes)?;
+            let ind = Index::new(&self.opts.log_dir, next_offset, self.opts.index_max_bytes)?;
+            (ind, seg)
+        };
+        swap(&mut p, &mut self.active);
+        self.closed.insert(p.1.starting_offset(), p);
         Ok(())
     }
 
