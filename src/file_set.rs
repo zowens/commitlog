@@ -64,7 +64,7 @@ impl FileSet {
                     None => {
                         // TODO: create the index from the segment
                         panic!("No index found for segment starting at {}", i);
-                    },
+                    }
                 }
             })
             .collect::<BTreeMap<u64, (Index, Segment)>>();
@@ -80,7 +80,7 @@ impl FileSet {
             None => {
                 info!("Starting new index and segment at offset 0");
                 let ind = Index::new(&opts.log_dir, 0, opts.index_max_bytes)?;
-                let seg = Segment::new(&opts.log_dir, 0, opts.log_max_bytes)?;;
+                let seg = Segment::new(&opts.log_dir, 0, opts.log_max_bytes)?;
                 (ind, seg)
             }
         };

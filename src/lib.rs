@@ -174,7 +174,7 @@ pub enum AppendError {
     FreshSegmentNotWritable,
     /// If a message that is larger than the per message size is tried to be appended
     /// it will not be allowed an will return an error
-    MessageSizeExceeded
+    MessageSizeExceeded,
 }
 
 impl From<io::Error> for AppendError {
@@ -189,10 +189,10 @@ impl error::Error for AppendError {
             AppendError::Io(_) => "File IO error occurred while appending to the log",
             AppendError::FreshIndexNotWritable => {
                 "While attempting to create a new index, the new index was not writabe"
-            },
+            }
             AppendError::FreshSegmentNotWritable => {
                 "While attempting to create a new segment, the new segment was not writabe"
-            },
+            }
             AppendError::MessageSizeExceeded => {
                 "While attempting to write a message, the per message size was exceeded"
             }
@@ -213,7 +213,7 @@ impl fmt::Display for AppendError {
             AppendError::Io(_) => write!(f, "IO Error"),
             AppendError::FreshIndexNotWritable => write!(f, "Fresh index error"),
             AppendError::FreshSegmentNotWritable => write!(f, "Fresh segment error"),
-            AppendError::MessageSizeExceeded => write!(f, "Message Size exceeded error")
+            AppendError::MessageSizeExceeded => write!(f, "Message Size exceeded error"),
         }
     }
 }
@@ -308,7 +308,7 @@ pub struct LogOptions {
     log_dir: PathBuf,
     log_max_bytes: usize,
     index_max_bytes: usize,
-    message_max_bytes: usize
+    message_max_bytes: usize,
 }
 
 impl LogOptions {
@@ -325,7 +325,7 @@ impl LogOptions {
             log_dir: log_dir.as_ref().to_owned(),
             log_max_bytes: 1_000_000_000,
             index_max_bytes: 800_000,
-            message_max_bytes: 1000000
+            message_max_bytes: 1000000,
         }
     }
 
@@ -382,7 +382,7 @@ impl CommitLog {
     {
         //Check if given message exceeded the max size
         if buf.bytes().len() > self.file_set.log_options().message_max_bytes {
-            return Err(AppendError::MessageSizeExceeded)
+            return Err(AppendError::MessageSizeExceeded);
         }
 
         // first write to the current segment
@@ -437,7 +437,10 @@ impl CommitLog {
 
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit
     /// via the reader.
-    pub fn reader<R: LogSliceReader>(&self, start: Offset, limit: ReadLimit) -> Result<R::Result, ReadError> {
+    pub fn reader<R: LogSliceReader>(&self,
+                                     start: Offset,
+                                     limit: ReadLimit)
+                                     -> Result<R::Result, ReadError> {
         // TODO: can this be caught at the index level insead?
         if start >= self.file_set.active_index().next_offset() {
             return Ok(R::empty());
@@ -463,37 +466,10 @@ impl CommitLog {
             };
 
             // grab the range from the contained index
-            let range = index.find_segment_range(start, max_bytes, seg_bytes)?;
-            if range.is_incomplete() {
-                // find the next index (ensure its actually the next index)
-                // and then read the first entry, which could complete the
-                // range of the read.
-                let next_entry = index.last_entry()
-                    .and_then(|p| self.file_set.find_index(p.offset() + 1))
-                    .and_then(|ind| if ind.starting_offset() == index.starting_offset() {
-                        None
-                    } else {
-                        ind.read_entry(0)
-                    });
-                range.complete(max_bytes, next_entry)?
-            } else {
-                range
-            }
+            index.find_segment_range(start, max_bytes, seg_bytes)?
         };
 
-        // if the range is STILL incomplete, theres a message that is larger than max_bytes
-        // and cannot be read
-        let (start_file_pos, bytes) = match range {
-            MessageSetRange::Slice { start, bytes } => (start.file_position(), bytes),
-            MessageSetRange::IncompleteSlice { .. } => {
-                error!("Could not find range of the log starting at offset {} with max bytes {}",
-                       start,
-                       max_bytes);
-                return Err(ReadError::NoSuchSegment);
-            }
-        };
-
-        Ok(segment.read_slice::<R>(start_file_pos, bytes)?)
+        Ok(segment.read_slice::<R>(range.file_position(), range.bytes())?)
     }
 
     /// Forces a flush of the log.
@@ -517,8 +493,7 @@ mod tests {
     pub fn offset_range() {
         let range = OffsetRange(2, 6);
 
-        assert_eq!(vec![2, 3, 4, 5, 6, 7],
-                   range.iter().collect::<Vec<u64>>());
+        assert_eq!(vec![2, 3, 4, 5, 6, 7], range.iter().collect::<Vec<u64>>());
 
         assert_eq!(vec![7, 6, 5, 4, 3, 2],
                    range.iter().rev().collect::<Vec<u64>>());
@@ -549,8 +524,7 @@ mod tests {
         let range = log.append(&mut buf).unwrap();
         assert_eq!(0, range.first());
         assert_eq!(3, range.len());
-        assert_eq!(vec![0, 1, 2],
-                   range.iter().collect::<Vec<u64>>());
+        assert_eq!(vec![0, 1, 2], range.iter().collect::<Vec<u64>>());
     }
 
 
@@ -604,17 +578,15 @@ mod tests {
         log.flush().unwrap();
 
         {
-            let active_index_read =
-                log.read(82, ReadLimit::max_bytes(168)).unwrap();
+            let active_index_read = log.read(82, ReadLimit::max_bytes(168)).unwrap();
             assert_eq!(6, active_index_read.len());
             assert_eq!(vec![82, 83, 84, 85, 86, 87],
                        active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
         }
 
         {
-            let old_index_read =
-                log.read(5, ReadLimit::max_bytes(112))
-                    .unwrap();
+            let old_index_read = log.read(5, ReadLimit::max_bytes(112))
+                .unwrap();
             assert_eq!(4, old_index_read.len());
             assert_eq!(vec![5, 6, 7, 8],
                        old_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
@@ -623,9 +595,8 @@ mod tests {
         // read at the boundary (not going to get full message limit)
         {
             // log rolls at offset 36
-            let boundary_read =
-                log.read(33, ReadLimit::max_bytes(100))
-                    .unwrap();
+            let boundary_read = log.read(33, ReadLimit::max_bytes(100))
+                .unwrap();
             assert_eq!(3, boundary_read.len());
             assert_eq!(vec![33, 34, 35],
                        boundary_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
@@ -655,8 +626,7 @@ mod tests {
         {
             let mut log = CommitLog::new(opts).unwrap();
 
-            let active_index_read =
-                log.read(82, ReadLimit::max_bytes(130)).unwrap();
+            let active_index_read = log.read(82, ReadLimit::max_bytes(130)).unwrap();
 
             assert_eq!(4, active_index_read.len());
             assert_eq!(vec![82, 83, 84, 85],
@@ -695,7 +665,8 @@ mod tests {
     pub fn append_message_greater_than_max() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
-        //create vector with 1.2mb of size, u8 = 1 byte thus, 1mb = 1000000 bytes, 1200000 items needed
+        //create vector with 1.2mb of size, u8 = 1 byte thus,
+        //1mb = 1000000 bytes, 1200000 items needed
         let mut value = String::new();
         let mut target = 0;
         while target != 2000000 {

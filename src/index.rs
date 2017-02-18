@@ -16,7 +16,7 @@ pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
 #[inline]
 fn binary_search<F>(index: &[u8], f: F) -> usize
-    where F: Fn(u32) -> Ordering
+    where F: Fn(u32, u32) -> Ordering
 {
     assert!(index.len() % INDEX_ENTRY_BYTES == 0);
 
@@ -30,8 +30,9 @@ fn binary_search<F>(index: &[u8], f: F) -> usize
         // read the relative offset at the midpoint
         let mi = m * INDEX_ENTRY_BYTES;
         let rel_off = LittleEndian::read_u32(&index[mi..mi + 4]);
+        let file_pos = LittleEndian::read_u32(&index[mi + 4..mi + 8]);
 
-        match f(rel_off) {
+        match f(rel_off, file_pos) {
             Ordering::Equal => return m,
             Ordering::Less => {
                 i = m + 1;
@@ -46,7 +47,8 @@ fn binary_search<F>(index: &[u8], f: F) -> usize
 
 macro_rules! entry {
     ($mem:ident, $pos:expr) => (
-        (LittleEndian::read_u32(&$mem[($pos)..($pos) + 4]), LittleEndian::read_u32(&$mem[($pos) + 4..($pos) + 8]))
+        (LittleEndian::read_u32(&$mem[($pos)..($pos) + 4]),
+         LittleEndian::read_u32(&$mem[($pos) + 4..($pos) + 8]))
     )
 }
 
@@ -60,50 +62,18 @@ pub enum RangeFindError {
 
 /// Range within a single segment file of messages.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum MessageSetRange {
-    /// A slice within the log has been found.
-    Slice { start: IndexEntry, bytes: u32 },
-    IncompleteSlice { start: IndexEntry, last: IndexEntry },
+pub struct MessageSetRange {
+    file_pos: u32,
+    bytes: u32,
 }
 
 impl MessageSetRange {
-    pub fn complete(self,
-                    max_bytes: u32,
-                    next_index_entry: Option<IndexEntry>)
-                    -> Result<MessageSetRange, RangeFindError> {
-        match self {
-            v @ MessageSetRange::Slice { .. } => Ok(v),
-            MessageSetRange::IncompleteSlice { start, last } => {
-                match next_index_entry {
-                    // use the last entry if it falls within max_bytes range
-                    Some(e) if e.file_pos - start.file_pos <= max_bytes => {
-                        Ok(MessageSetRange::Slice {
-                            start: start,
-                            bytes: e.file_pos - start.file_pos,
-                        })
-                    }
-                    _ => {
-                        // reject start == end (empty append)
-                        if start.file_pos == last.file_pos {
-                            trace!("Cannot append last message since it exceeded max bytes");
-                            Err(RangeFindError::MessageExceededMaxBytes)
-                        } else {
-                            Ok(MessageSetRange::Slice {
-                                start: start,
-                                bytes: last.file_pos - start.file_pos,
-                            })
-                        }
-                    }
-                }
-            }
-        }
+    pub fn file_position(&self) -> u32 {
+        self.file_pos
     }
 
-    pub fn is_incomplete(&self) -> bool {
-        match *self {
-            MessageSetRange::IncompleteSlice { .. } => true,
-            _ => false,
-        }
+    pub fn bytes(&self) -> u32 {
+        self.bytes
     }
 }
 
@@ -222,7 +192,7 @@ impl Index {
             if last_val == 0 {
                 // partial index, search for break point
                 INDEX_ENTRY_BYTES *
-                binary_search(index, |rel_off| {
+                binary_search(index, |rel_off, _| {
                     // if the relative offset is 0 then go to the left,
                     // otherwise go to the right to find a slot with 0
                     //
@@ -282,8 +252,10 @@ impl Index {
     pub fn append(&mut self, abs_offset: u64, position: u32) -> io::Result<()> {
         trace!("Index append {} => {}", abs_offset, position);
 
-        assert!(abs_offset >= self.base_offset, "Attempt to append to an offset before base offset in index");
-        assert!(self.mode == AccessMode::ReadWrite, "Attempt to append to readonly index");
+        assert!(abs_offset >= self.base_offset,
+                "Attempt to append to an offset before base offset in index");
+        assert!(self.mode == AccessMode::ReadWrite,
+                "Attempt to append to readonly index");
 
         // check if we need to resize
         if self.size() < (self.next_write_pos + INDEX_ENTRY_BYTES) {
@@ -327,14 +299,6 @@ impl Index {
     pub fn flush_sync(&mut self) -> io::Result<()> {
         self.mmap.flush()?;
         self.file.flush()
-    }
-
-    pub fn last_entry(&self) -> Option<IndexEntry> {
-        if self.next_write_pos == 0 {
-            None
-        } else {
-            self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
-        }
     }
 
     pub fn next_offset(&self) -> Offset {
@@ -409,82 +373,48 @@ impl Index {
         };
 
         let mem_slice = unsafe { self.mmap.as_slice() };
-        let (start_off, start_file_pos) = entry!(mem_slice, start_ind_pos);
+        let (_, start_file_pos) = entry!(mem_slice, start_ind_pos);
 
         // try to get until the end of the segment
         if seg_bytes - start_file_pos < max_bytes {
             trace!("Requested range contains the rest of the segment, does not exceed max bytes");
-            return Ok(MessageSetRange::Slice {
-                start: IndexEntry {
-                    rel_offset: start_off,
-                    base_offset: self.base_offset,
-                    file_pos: start_file_pos,
-                },
+            return Ok(MessageSetRange {
+                file_pos: start_file_pos,
                 bytes: seg_bytes - start_file_pos,
             });
         }
 
-        let mut last_offset = start_off;
-        let mut last_file_pos = start_file_pos;
-        for p in (start_ind_pos + INDEX_ENTRY_BYTES..self.next_write_pos)
-            .step_by(INDEX_ENTRY_BYTES) {
-            let (p_off, p_file_pos) = entry!(mem_slice, p);
-
-            // segment reached the end, the slice is complete and contains the
-            // last message appended to the segment
-            if p_file_pos <= last_file_pos {
-                // NOTE: this really shouldn't happen, its a pathological case that should
-                // have been tripped by the previous check. Rather than assert here, I'm going
-                // to allow it.
-                trace!("Segment ended within the index, message set will contain the rest of the \
-                        segment");
-                return Ok(MessageSetRange::Slice {
-                    start: IndexEntry {
-                        rel_offset: start_off,
-                        base_offset: self.base_offset,
-                        file_pos: start_file_pos,
-                    },
-                    bytes: seg_bytes - start_file_pos,
-                });
-            }
-
-            // ending at this position would exceed the log.
-            if p_file_pos - start_file_pos > max_bytes {
-                // read one position back to get the correct size under max_bytes
-                let (end_offset, end_file_pos) = entry!(mem_slice, p - INDEX_ENTRY_BYTES);
-                if end_offset == start_off {
-                    trace!("Message at offset {} exceeds max bytes and cannot be added to the \
-                            read set",
-                           start_off);
-                    return Err(RangeFindError::MessageExceededMaxBytes);
-                } else {
-                    return Ok(MessageSetRange::Slice {
-                        start: IndexEntry {
-                            rel_offset: start_off,
-                            base_offset: self.base_offset,
-                            file_pos: start_file_pos,
-                        },
-                        bytes: end_file_pos - start_file_pos,
-                    });
-                }
-            }
-
-            last_file_pos = p_file_pos;
-            last_offset = p_off;
+        let search_range = &mem_slice[start_ind_pos..self.next_write_pos];
+        if search_range.is_empty() {
+            return Err(RangeFindError::MessageExceededMaxBytes);
         }
 
-        Ok(MessageSetRange::IncompleteSlice {
-            start: IndexEntry {
-                rel_offset: start_off,
-                base_offset: self.base_offset,
+        let end_ind_pos = binary_search(search_range,
+                                        |_, pos| (pos - start_file_pos).cmp(&max_bytes));
+
+        let pos = {
+            // binary search will choose the next entry when the left value is less, and the
+            // right value is greater and not equal, so fix by grabbing the left
+            let (_, pos) = entry!(search_range, end_ind_pos * INDEX_ENTRY_BYTES);
+            if end_ind_pos > 0 && pos - start_file_pos > max_bytes {
+                trace!("Binary search yielded a range too large, trying entry before");
+                let (_, pos) = entry!(search_range, (end_ind_pos - 1) * INDEX_ENTRY_BYTES);
+                pos
+            } else {
+                pos
+            }
+        };
+
+        let bytes = pos - start_file_pos;
+        if bytes == 0 || bytes > max_bytes {
+            Err(RangeFindError::MessageExceededMaxBytes)
+        } else {
+            trace!("Found slice range {}..{}", start_file_pos, pos);
+            Ok(MessageSetRange {
                 file_pos: start_file_pos,
-            },
-            last: IndexEntry {
-                rel_offset: last_offset,
-                base_offset: self.base_offset,
-                file_pos: last_file_pos,
-            },
-        })
+                bytes: bytes,
+            })
+        }
     }
 
     fn find_index_pos(&self, offset: u64) -> Option<usize> {
@@ -514,7 +444,7 @@ impl Index {
         }
 
         let i = binary_search(&mem_slice[0..self.next_write_pos],
-                              |v| v.cmp(&rel_offset));
+                              |v, _| v.cmp(&rel_offset));
         trace!("Found offset {} at entry {}", offset, i);
 
         if i < self.next_write_pos / INDEX_ENTRY_BYTES {
@@ -738,11 +668,7 @@ mod tests {
             let e2 = index.find(12);
             assert!(e2.is_none());
 
-            let e_last = index.last_entry();
-            assert!(e_last.is_some());
-            let last_entry = e_last.unwrap();
-            assert_eq!(1, last_entry.relative_offset());
-            assert_eq!(2, last_entry.file_position());
+            assert_eq!(12, index.next_offset());
 
             // assert_eq!(16, index.size());
             assert_eq!(AccessMode::ReadWrite, index.mode);
@@ -777,11 +703,7 @@ mod tests {
             let e2 = index.find(12);
             assert!(e2.is_none());
 
-            let e_last = index.last_entry();
-            assert!(e_last.is_some());
-            let last_entry = e_last.unwrap();
-            assert_eq!(1, last_entry.relative_offset());
-            assert_eq!(2, last_entry.file_position());
+            assert_eq!(12, index.next_offset());
         }
     }
 
@@ -810,116 +732,27 @@ mod tests {
 
         // test message within range, not including last message
         let res = index.find_segment_range(10, 20, 60);
-        assert_eq!(Ok(MessageSetRange::Slice {
-                       start: IndexEntry {
-                           rel_offset: 0,
-                           base_offset: 10,
-                           file_pos: 10,
-                       },
+        assert_eq!(Ok(MessageSetRange {
+                       file_pos: 10,
                        bytes: 20,
                    }),
                    res);
 
-        // test message set that spans indexes
-        //
-        // Segment is 1000 bytes long, index knows about first 50 bytes
-        // and the max we can read from the range is 500, meaning the
-        // range cannot contain the rest of the log.
-        let res = index.find_segment_range(10, 500, 1000);
-        assert_eq!(Ok(MessageSetRange::IncompleteSlice {
-                       start: IndexEntry {
-                           rel_offset: 0,
-                           base_offset: 10,
-                           file_pos: 10,
-                       },
-                       last: IndexEntry {
-                           rel_offset: 4,
-                           base_offset: 10,
-                           file_pos: 50,
-                       },
+        // test message within range, not including last message, not first
+        let res = index.find_segment_range(11, 20, 60);
+        assert_eq!(Ok(MessageSetRange {
+                       file_pos: 20,
+                       bytes: 20,
                    }),
                    res);
 
-        // TODO: do we really want this behavior...?
-        let res = index.find_segment_range(14, 500, 1000);
-        assert_eq!(Ok(MessageSetRange::IncompleteSlice {
-                       start: IndexEntry {
-                           rel_offset: 4,
-                           base_offset: 10,
-                           file_pos: 50,
-                       },
-                       last: IndexEntry {
-                           rel_offset: 4,
-                           base_offset: 10,
-                           file_pos: 50,
-                       },
-                   }),
-                   res);
-    }
-
-    #[test]
-    fn message_set_range_complete() {
-        // without entry should use last entry as range end
-        let starting = MessageSetRange::IncompleteSlice {
-            start: IndexEntry {
-                rel_offset: 0,
-                base_offset: 10,
-                file_pos: 10,
-            },
-            last: IndexEntry {
-                rel_offset: 4,
-                base_offset: 10,
-                file_pos: 50,
-            },
-        };
-
-        // complete with acceptable range
-        assert_eq!(Ok(MessageSetRange::Slice {
-                       start: IndexEntry {
-                           rel_offset: 0,
-                           base_offset: 10,
-                           file_pos: 10,
-                       },
-                       bytes: 50,
-                   }),
-                   starting.clone().complete(1000,
-                                             Some(IndexEntry {
-                                                 rel_offset: 0,
-                                                 base_offset: 15,
-                                                 file_pos: 60,
-                                             })));
-
-        // complete with last entry dictating range
-        assert_eq!(Ok(MessageSetRange::Slice {
-                       start: IndexEntry {
-                           rel_offset: 0,
-                           base_offset: 10,
-                           file_pos: 10,
-                       },
+        // test message within rest of range, not including last message
+        let res = index.find_segment_range(11, 80, 60);
+        assert_eq!(Ok(MessageSetRange {
+                       file_pos: 20,
                        bytes: 40,
                    }),
-                   starting.clone().complete(50,
-                                             Some(IndexEntry {
-                                                 rel_offset: 0,
-                                                 base_offset: 15,
-                                                 file_pos: 600,
-                                             })));
-
-        // complete with same entry (error)
-        let incomplete_same_slice = MessageSetRange::IncompleteSlice {
-            start: IndexEntry {
-                rel_offset: 0,
-                base_offset: 10,
-                file_pos: 10,
-            },
-            last: IndexEntry {
-                rel_offset: 0,
-                base_offset: 10,
-                file_pos: 10,
-            },
-        };
-        assert_eq!(Err(RangeFindError::MessageExceededMaxBytes),
-                   incomplete_same_slice.complete(50, None));
+                   res);
     }
 
     #[test]
