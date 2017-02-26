@@ -339,6 +339,7 @@ impl LogOptions {
     /// Bounds the size of an individual memory-mapped index file.
     #[inline]
     pub fn index_max_items(&mut self, items: usize) -> &mut LogOptions {
+        // TODO: this should be renamed to starting bytes
         self.index_max_bytes = items * INDEX_ENTRY_BYTES;
         self
     }
@@ -464,6 +465,30 @@ impl CommitLog {
         Ok(seg.read_slice::<R>(range.file_position(), range.bytes())?)
     }
 
+    /// Truncates a file after the offset supplied. The resulting log will contain
+    /// entries up to the offset.
+    pub fn truncate(&mut self, offset: Offset) -> io::Result<()> {
+        info!("Truncating log to offset {}", offset);
+
+        // remove index/segment files rolled after the offset
+        let to_remove = self.file_set.take_after(offset);
+        for p in to_remove {
+            trace!("Removing segment and index starting at {}",
+                   p.0.starting_offset());
+            assert!(p.0.starting_offset() > offset);
+
+            p.0.remove()?;
+            p.1.remove()?;
+        }
+
+        // truncate the current index
+        match self.file_set.active_index_mut().truncate(offset) {
+            Some(len) => self.file_set.active_segment_mut().truncate(len),
+            // index outside of appended range
+            None => Ok(()),
+        }
+    }
+
     /// Forces a flush of the log.
     pub fn flush(&mut self) -> io::Result<()> {
         self.file_set.active_segment_mut().flush_sync()?;
@@ -524,11 +549,11 @@ mod tests {
     pub fn append_new_segment() {
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
-        opts.segment_max_bytes(52);
+        opts.segment_max_bytes(62);
 
         {
             let mut log = CommitLog::new(opts).unwrap();
-            // first 2 entries fit (both 26 bytes with encoding)
+            // first 2 entries fit (both 30 bytes with encoding)
             log.append_msg("0123456789").unwrap();
             log.append_msg("0123456789").unwrap();
 
@@ -537,20 +562,11 @@ mod tests {
             log.flush().unwrap();
         }
 
-        let files = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
-            .collect::<HashSet<String>>();
-
-        // TODO: should be a new index too!
-        let expected =
-            ["00000000000000000000.index", "00000000000000000000.log", "00000000000000000002.log"]
-                .iter()
-                .cloned()
-                .map(|s| s.to_string())
-                .collect::<HashSet<String>>();
-
-        assert_eq!(files.intersection(&expected).count(), 3);
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index"]);
     }
 
     #[test]
@@ -644,7 +660,6 @@ mod tests {
         }
 
         {
-            // TODO: fix the problem or reopening log w/o writes to first segment
             CommitLog::new(opts.clone()).expect("Should be able to reopen log without writes");
         }
 
@@ -666,10 +681,177 @@ mod tests {
             target += 1;
         }
         let res = log.append_msg(value);
-        //println!("{:?}", res);
         //will fail if no error is found which means a message greater than the limit passed through
         assert!(res.is_err());
         log.flush().unwrap();
     }
 
+    #[test]
+    pub fn truncate_from_active() {
+        let dir = TestDir::new();
+        let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
+
+        // append 5 messages
+        {
+            let mut buf = MessageBuf::default();
+            buf.push(b"123456");
+            buf.push(b"789012");
+            buf.push(b"345678");
+            buf.push(b"aaaaaa");
+            buf.push(b"bbbbbb");
+            log.append(&mut buf).unwrap();
+        }
+
+        // truncate to offset 2 (should remove 2 messages)
+        log.truncate(2).expect("Unable to truncate file");
+
+        assert_eq!(Some(2), log.last_offset());
+    }
+
+    #[test]
+    pub fn truncate_after_offset_removes_segments() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(52);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        // append 6 messages (4 segments)
+        {
+            for _ in 0..7 {
+                log.append_msg(b"12345").unwrap();
+            }
+        }
+
+        // ensure we have the expected index/logs
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index",
+                          "00000000000000000004.log",
+                          "00000000000000000004.index",
+                          "00000000000000000006.log",
+                          "00000000000000000006.index"]);
+
+        // truncate to offset 2 (should remove 2 messages)
+        log.truncate(3).expect("Unable to truncate file");
+
+        assert_eq!(Some(3), log.last_offset());
+
+        // ensure we have the expected index/logs
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index"]);
+    }
+
+    #[test]
+    pub fn truncate_at_segment_boundary_removes_segments() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(52);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        // append 6 messages (4 segments)
+        {
+            for _ in 0..7 {
+                log.append_msg(b"12345").unwrap();
+            }
+        }
+
+        // ensure we have the expected index/logs
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index",
+                          "00000000000000000004.log",
+                          "00000000000000000004.index",
+                          "00000000000000000006.log",
+                          "00000000000000000006.index"]);
+
+        // truncate to offset 2 (should remove 2 messages)
+        log.truncate(2).expect("Unable to truncate file");
+
+        assert_eq!(Some(2), log.last_offset());
+
+        // ensure we have the expected index/logs
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index"]);
+    }
+
+    #[test]
+    pub fn truncate_after_last_append_does_nothing() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(52);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        // append 6 messages (4 segments)
+        {
+            for _ in 0..7 {
+                log.append_msg(b"12345").unwrap();
+            }
+        }
+
+        // ensure we have the expected index/logs
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index",
+                          "00000000000000000004.log",
+                          "00000000000000000004.index",
+                          "00000000000000000006.log",
+                          "00000000000000000006.index"]);
+
+        // truncate to offset 2 (should remove 2 messages)
+        log.truncate(7).expect("Unable to truncate file");
+
+        assert_eq!(Some(6), log.last_offset());
+
+        // ensure we have the expected index/logs
+        expect_files(&dir,
+                     vec!["00000000000000000000.index",
+                          "00000000000000000000.log",
+                          "00000000000000000002.log",
+                          "00000000000000000002.index",
+                          "00000000000000000004.log",
+                          "00000000000000000004.index",
+                          "00000000000000000006.log",
+                          "00000000000000000006.index"]);
+    }
+
+    fn expect_files<P: AsRef<Path>, I>(dir: P, files: I)
+        where I: IntoIterator<Item = &'static str>
+    {
+        let dir_files = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
+            .collect::<HashSet<String>>();
+        let expected = files.into_iter().map(|s| s.to_string()).collect::<HashSet<String>>();
+        assert_eq!(dir_files.len(),
+                   expected.len(),
+                   "Invalid file count, expected {:?} got {:?}",
+                   expected,
+                   dir_files);
+        assert_eq!(dir_files.intersection(&expected).count(),
+                   expected.len(),
+                   "Invalid file count, expected {:?} got {:?}",
+                   expected,
+                   dir_files);
+    }
 }

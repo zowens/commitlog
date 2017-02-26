@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::fs::{OpenOptions, File};
+use std::fs::{self, OpenOptions, File};
 use std::io::{self, Write};
 use super::message::*;
 use super::reader::*;
@@ -24,6 +24,9 @@ pub static VERSION_1_MAGIC: [u8; 2] = [0xff, 0xff];
 pub struct Segment {
     /// File descriptor
     file: File,
+
+    /// Path to the file
+    path: PathBuf,
 
     /// Base offset of the log
     base_offset: u64,
@@ -72,6 +75,7 @@ impl Segment {
 
         Ok(Segment {
             file: f,
+            path: log_path,
             base_offset: base_offset,
             write_pos: 2,
             max_bytes: max_bytes,
@@ -114,6 +118,7 @@ impl Segment {
 
         Ok(Segment {
             file: seg_file,
+            path: seg_path.as_ref().to_path_buf(),
             write_pos: meta.len() as usize,
             base_offset: base_offset,
             max_bytes: max_bytes,
@@ -156,6 +161,23 @@ impl Segment {
                                          -> Result<T::Result, MessageError> {
         T::read_from(&self.file, file_pos, bytes as usize)
     }
+
+    /// Removes the segment file.
+    pub fn remove(self) -> io::Result<()> {
+        let path = self.path.clone();
+        drop(self);
+
+        info!("Removing segment file {}", path.display());
+        fs::remove_file(path)
+    }
+
+    /// Truncates the segment file to desired length. Other methods should
+    /// ensure that the truncation is at the message boundary.
+    pub fn truncate(&mut self, length: u32) -> io::Result<()> {
+        self.file.set_len(length as u64)?;
+        self.write_pos = length as usize;
+        Ok(())
+    }
 }
 
 
@@ -165,6 +187,7 @@ mod tests {
     use super::super::testutil::*;
     use test::Bencher;
     use std::path::PathBuf;
+    use std::fs;
 
     #[test]
     pub fn log_append() {
@@ -300,6 +323,73 @@ mod tests {
         for (i, m) in msgs.iter().enumerate() {
             assert_eq!(i as u64, m.offset());
         }
+    }
+
+    #[test]
+    pub fn log_remove() {
+        let log_dir = TestDir::new();
+        let f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        let seg_exists = fs::read_dir(&log_dir)
+            .unwrap()
+            .find(|entry| {
+                let path = entry.as_ref().unwrap().path();
+                path.file_name().unwrap() == "00000000000000000000.log"
+            })
+            .is_some();
+        assert!(seg_exists, "Segment file does not exist?");
+
+        f.remove().unwrap();
+
+        let seg_exists = fs::read_dir(&log_dir)
+            .unwrap()
+            .find(|entry| {
+                let path = entry.as_ref().unwrap().path();
+                path.file_name().unwrap() == "00000000000000000000.log"
+            })
+            .is_some();
+        assert!(!seg_exists, "Segment file should have been removed");
+    }
+
+    #[test]
+    pub fn log_truncate() {
+        let log_dir = TestDir::new();
+        let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
+
+        let meta = {
+            let mut buf = MessageBuf::default();
+            buf.push("0123456789");
+            buf.push("aaaaaaaaaa");
+            buf.push("abc");
+            f.append(&mut buf, 0).unwrap()
+        };
+
+        let msg_buf = f.read_slice::<MessageBufReader>(2, f.size() as u32 - 2)
+            .expect("Read after first append failed");
+        assert_eq!(3, msg_buf.len());
+
+        // truncate to first message
+        f.truncate(meta[1].file_pos).unwrap();
+
+        assert_eq!(meta[1].file_pos as usize, f.size());
+
+        let size = fs::metadata(&f.path).unwrap().len();
+        assert_eq!(meta[1].file_pos as u64, size);
+
+        let meta2 = {
+            let mut buf = MessageBuf::default();
+            buf.push("zzzzzzzzzz");
+            f.append(&mut buf, 1).unwrap()
+        };
+        assert_eq!(meta[1].file_pos, meta2[0].file_pos);
+
+        let size = fs::metadata(&f.path).unwrap().len();
+        assert_eq!(f.size() as u64, size);
+
+        // read the log
+        let msg_buf = f.read_slice::<MessageBufReader>(2, f.size() as u32 - 2)
+            .expect("Read after second append failed");
+        assert_eq!(2, msg_buf.len());
     }
 
     #[bench]

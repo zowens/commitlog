@@ -2,7 +2,7 @@ use byteorder::{LittleEndian, ByteOrder};
 use memmap::{Mmap, MmapViewSync, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
-use std::fs::{OpenOptions, File};
+use std::fs::{self, OpenOptions, File};
 use std::{u64, usize};
 use std::cmp::Ordering;
 use super::Offset;
@@ -82,6 +82,7 @@ impl MessageSetRange {
 /// of messages at the relative offset messages. The index is Memory Mapped.
 pub struct Index {
     file: File,
+    path: PathBuf,
     mmap: MmapViewSync,
     mode: AccessMode,
 
@@ -97,30 +98,6 @@ pub enum AccessMode {
     Read,
     /// This is the active index and can be read or written to.
     ReadWrite,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct IndexEntry {
-    rel_offset: u32,
-    base_offset: u64,
-    file_pos: u32,
-}
-
-impl IndexEntry {
-    #[cfg(test)]
-    pub fn relative_offset(&self) -> u32 {
-        self.rel_offset
-    }
-
-    #[inline]
-    pub fn offset(&self) -> u64 {
-        self.base_offset + (self.rel_offset as u64)
-    }
-
-    #[inline]
-    pub fn file_position(&self) -> u32 {
-        self.file_pos
-    }
 }
 
 impl Index {
@@ -155,6 +132,7 @@ impl Index {
 
         Ok(Index {
             file: index_file,
+            path: index_path,
             mmap: mmap,
             mode: AccessMode::ReadWrite,
             next_write_pos: 0,
@@ -215,6 +193,7 @@ impl Index {
 
         Ok(Index {
             file: index_file,
+            path: index_path.as_ref().to_path_buf(),
             mmap: mmap,
             mode: AccessMode::ReadWrite,
             next_write_pos: next_write_pos,
@@ -296,6 +275,60 @@ impl Index {
         }
     }
 
+    pub fn remove(self) -> io::Result<()> {
+        let path = self.path.clone();
+        drop(self);
+
+        info!("Removing index file {}", path.display());
+        fs::remove_file(path)
+    }
+
+    /// Truncates to an offset, inclusive. The file length of the
+    /// segment for truncation is returned.
+    pub fn truncate(&mut self, offset: Offset) -> Option<u32> {
+        // find the next offset position in order to inform
+        // the truncation of the segment
+        let next_pos = match self.find_index_pos(offset + 1) {
+            Some(i) => {
+                trace!("Found offset mem offset {}", i);
+                i
+            }
+            None => {
+                trace!("No offset {} found in index", offset + 1);
+                return None;
+            }
+        };
+
+
+        let mut mem = unsafe { self.mmap.as_mut_slice() };
+
+        let (off, file_len) = entry!(mem, next_pos);
+
+        // find_index_pos will find the right-most position, which may include
+        // something <= the offset passed in, which we should reject for
+        // truncation. This likely occurs when the last offset is the offset
+        // requested for truncation OR the offset for truncation is > than the
+        // last offset.
+        if off as u64 + self.base_offset <= offset {
+            trace!("Truncated to exact segment boundary, no need to truncate segment");
+            return None;
+        }
+
+        trace!("Start of truncation at offset {}, to segment length {}",
+               offset,
+               file_len);
+
+        // override file positions > offset
+        for elem in &mut mem[next_pos..self.next_write_pos].iter_mut() {
+            *elem = 0;
+        }
+
+        // re-adjust the next file pos
+        self.next_write_pos = next_pos;
+
+        Some(file_len)
+    }
+
     pub fn flush_sync(&mut self) -> io::Result<()> {
         self.mmap.flush()?;
         self.file.flush()
@@ -306,11 +339,11 @@ impl Index {
             self.base_offset
         } else {
             let entry = self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1).unwrap();
-            entry.offset() + 1
+            entry.0 + 1
         }
     }
 
-    pub fn read_entry(&self, i: usize) -> Option<IndexEntry> {
+    pub fn read_entry(&self, i: usize) -> Option<(Offset, u32)> {
         if self.size() < (i + 1) * 8 {
             return None;
         }
@@ -323,11 +356,7 @@ impl Index {
                 None
             } else {
                 let pos = LittleEndian::read_u32(&mem_slice[start + 4..start + 8]);
-                Some(IndexEntry {
-                    rel_offset: offset,
-                    base_offset: self.base_offset,
-                    file_pos: pos,
-                })
+                Some((offset as u64 + self.base_offset, pos))
             }
         }
     }
@@ -340,19 +369,16 @@ impl Index {
     /// If the entry does not exist and the last entry is < the desired,
     /// the offset has not been written to this index and None value is returned.
     #[allow(dead_code)]
-    pub fn find(&self, offset: u64) -> Option<IndexEntry> {
+    pub fn find(&self, offset: Offset) -> Option<(Offset, u32)> {
         self.find_index_pos(offset)
             .and_then(|p| {
                 let mem_slice = unsafe { self.mmap.as_slice() };
                 let (rel_off, file_pos) = entry!(mem_slice, p);
-                if rel_off as u64 + self.base_offset < offset {
+                let abs_off = rel_off as u64 + self.base_offset;
+                if abs_off < offset {
                     None
                 } else {
-                    Some(IndexEntry {
-                        rel_offset: rel_off,
-                        base_offset: self.base_offset,
-                        file_pos: file_pos,
-                    })
+                    Some((abs_off, file_pos))
                 }
             })
     }
@@ -360,7 +386,7 @@ impl Index {
     /// Finds the longest message set range within a single segment aligning to the
     /// `max_bytes` parameter.
     pub fn find_segment_range(&self,
-                              offset: u64,
+                              offset: Offset,
                               max_bytes: u32,
                               seg_bytes: u32)
                               -> Result<MessageSetRange, RangeFindError> {
@@ -417,7 +443,7 @@ impl Index {
         }
     }
 
-    fn find_index_pos(&self, offset: u64) -> Option<usize> {
+    fn find_index_pos(&self, offset: Offset) -> Option<usize> {
         if offset < self.base_offset {
             // pathological case... not worth exposing Result
             return None;
@@ -475,14 +501,12 @@ mod tests {
         index.flush_sync().unwrap();
 
         let e0 = index.read_entry(0).unwrap();
-        assert_eq!(2u32, e0.relative_offset());
-        assert_eq!(11u64, e0.offset());
-        assert_eq!(0xffff, e0.file_position());
+        assert_eq!(11u64, e0.0);
+        assert_eq!(0xffff, e0.1);
 
         let e1 = index.read_entry(1).unwrap();
-        assert_eq!(3u32, e1.relative_offset());
-        assert_eq!(12u64, e1.offset());
-        assert_eq!(0xeeee, e1.file_position());
+        assert_eq!(12u64, e1.0);
+        assert_eq!(0xeeee, e1.1);
 
         // read an entry that does not exist
         let e2 = index.read_entry(2);
@@ -503,9 +527,8 @@ mod tests {
         assert_eq!(AccessMode::Read, index.mode);
 
         let e1 = index.read_entry(1).unwrap();
-        assert_eq!(2u32, e1.relative_offset());
-        assert_eq!(12u64, e1.offset());
-        assert_eq!(0xeeee, e1.file_position());
+        assert_eq!(12u64, e1.0);
+        assert_eq!(0xeeee, e1.1);
 
         // read an entry that does not exist
         let e2 = index.read_entry(2);
@@ -540,9 +563,8 @@ mod tests {
             for i in 0..5usize {
                 let e = index.read_entry(i);
                 assert!(e.is_some());
-                assert_eq!(e.unwrap().relative_offset(), i as u32);
-                assert_eq!(e.unwrap().offset(), (i + 10) as u64);
-                assert_eq!(e.unwrap().file_position(), (i * 10) as u32);
+                assert_eq!(e.unwrap().0, (i + 10) as u64);
+                assert_eq!(e.unwrap().1, (i * 10) as u32);
             }
         }
     }
@@ -561,9 +583,8 @@ mod tests {
         index.append(20, 8).unwrap();
 
         let res = index.find(16).unwrap();
-        assert_eq!(6, res.relative_offset());
-        assert_eq!(16, res.offset());
-        assert_eq!(5, res.file_position());
+        assert_eq!(16, res.0);
+        assert_eq!(5, res.1);
     }
 
     #[test]
@@ -582,9 +603,8 @@ mod tests {
         index.append(17, 8).unwrap();
 
         let res = index.find(16).unwrap();
-        assert_eq!(6, res.relative_offset());
-        assert_eq!(16, res.offset());
-        assert_eq!(7, res.file_position());
+        assert_eq!(16, res.0);
+        assert_eq!(7, res.1);
     }
 
     #[test]
@@ -601,9 +621,8 @@ mod tests {
         index.append(20, 8).unwrap();
 
         let res = index.find(14).unwrap();
-        assert_eq!(15, res.offset());
-        assert_eq!(5, res.relative_offset());
-        assert_eq!(4, res.file_position());
+        assert_eq!(15, res.0);
+        assert_eq!(4, res.1);
     }
 
     #[test]
@@ -659,11 +678,11 @@ mod tests {
 
             let e0 = index.find(10);
             assert!(e0.is_some());
-            assert_eq!(0, e0.unwrap().relative_offset());
+            assert_eq!(10, e0.unwrap().0);
 
             let e1 = index.find(11);
             assert!(e1.is_some());
-            assert_eq!(1, e1.unwrap().relative_offset());
+            assert_eq!(11, e1.unwrap().0);
 
             let e2 = index.find(12);
             assert!(e2.is_none());
@@ -694,11 +713,11 @@ mod tests {
 
             let e0 = index.find(10);
             assert!(e0.is_some());
-            assert_eq!(0, e0.unwrap().relative_offset());
+            assert_eq!(10, e0.unwrap().0);
 
             let e1 = index.find(11);
             assert!(e1.is_some());
-            assert_eq!(1, e1.unwrap().relative_offset());
+            assert_eq!(11, e1.unwrap().0);
 
             let e2 = index.find(12);
             assert!(e2.is_none());
@@ -772,7 +791,75 @@ mod tests {
         // make sure the index was resized
         assert_eq!(48, index.size());
 
-        assert_eq!(50, index.find(14).unwrap().file_position());
+        assert_eq!(50, index.find(14).unwrap().1);
+    }
+
+    #[test]
+    fn index_remove() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+        let index = Index::new(&dir, 0u64, 32usize).unwrap();
+
+        let ind_exists = fs::read_dir(&dir)
+            .unwrap()
+            .find(|entry| {
+                let path = entry.as_ref().unwrap().path();
+                path.file_name().unwrap() == "00000000000000000000.index"
+            })
+            .is_some();
+        assert!(ind_exists, "Index file does not exist?");
+
+        // remove the index
+        index.remove().expect("Unable to remove file");
+
+        let ind_exists = fs::read_dir(&dir)
+            .unwrap()
+            .find(|entry| {
+                let path = entry.as_ref().unwrap().path();
+                path.file_name().unwrap() == "00000000000000000000.index"
+            })
+            .is_some();
+        assert!(!ind_exists, "Index should not exist");
+    }
+
+    #[test]
+    fn index_truncate() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 128usize).unwrap();
+        index.append(10, 10).unwrap();
+        index.append(11, 20).unwrap();
+        index.append(12, 30).unwrap();
+        index.append(13, 40).unwrap();
+        index.append(14, 50).unwrap();
+
+        let file_len = index.truncate(12);
+        assert_eq!(Some(40), file_len);
+        assert_eq!(13, index.next_offset());
+        assert_eq!(3 * INDEX_ENTRY_BYTES, index.next_write_pos);
+
+        // ensure we've zeroed the entries
+        let mem = unsafe { index.mmap.as_slice() };
+        for i in (3 * INDEX_ENTRY_BYTES)..(5 * INDEX_ENTRY_BYTES) {
+            assert_eq!(0, mem[i], "Expected 0 at index {}", i);
+        }
+    }
+
+    #[test]
+    fn index_truncate_at_boundary() {
+        env_logger::init().unwrap_or(());
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 128usize).unwrap();
+        index.append(10, 10).unwrap();
+        index.append(11, 20).unwrap();
+        index.append(12, 30).unwrap();
+        index.append(13, 40).unwrap();
+        index.append(14, 50).unwrap();
+
+        let file_len = index.truncate(14);
+        assert_eq!(None, file_len);
+        assert_eq!(15, index.next_offset());
+        assert_eq!(5 * INDEX_ENTRY_BYTES, index.next_write_pos);
     }
 
     #[bench]
