@@ -3,7 +3,7 @@
 Commit log library for rust. It is intended to be used in various higher-level distributed abstractions on top
 of a distributed log.
 
-[![Crates.io](https://img.shields.io/crates/v/commitlog.svg?maxAge=2592000)](https://crates.io/commitlog)
+[![Crates.io](https://img.shields.io/crates/v/commitlog.svg?maxAge=2592000)](https://crates.io/crates/commitlog)
 
 [Documentation](https://docs.rs/commitlog/)
 
