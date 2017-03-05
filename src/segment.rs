@@ -156,10 +156,11 @@ impl Segment {
     }
 
     pub fn read_slice<T: LogSliceReader>(&self,
+                                         reader: &mut T,
                                          file_pos: u32,
                                          bytes: u32)
                                          -> Result<T::Result, MessageError> {
-        T::read_from(&self.file, file_pos, bytes as usize)
+        reader.read_from(&self.file, file_pos, bytes as usize)
     }
 
     /// Removes the segment file.
@@ -267,7 +268,8 @@ mod tests {
             f.append(&mut buf, 0).unwrap();
         }
 
-        let msgs = f.read_slice::<MessageBufReader>(2, 83).unwrap();
+        let mut reader = MessageBufReader;
+        let msgs = f.read_slice(&mut reader, 2, 83).unwrap();
         assert_eq!(3, msgs.len());
 
         for (i, m) in msgs.iter().enumerate() {
@@ -289,7 +291,8 @@ mod tests {
         };
 
         // byte max contains message 0
-        let msgs = f.read_slice::<MessageBufReader>(2, meta[1].file_pos - 2)
+        let mut reader = MessageBufReader;
+        let msgs = f.read_slice(&mut reader, 2, meta[1].file_pos - 2)
             .unwrap();
 
         assert_eq!(1, msgs.len());
@@ -308,7 +311,8 @@ mod tests {
             f.append(&mut buf, 0).unwrap();
         }
 
-        let msgs = f.read_slice::<MessageBufReader>(2, 83).unwrap();
+        let mut reader = MessageBufReader;
+        let msgs = f.read_slice(&mut reader, 2, 83).unwrap();
         assert_eq!(3, msgs.len());
 
         {
@@ -317,7 +321,7 @@ mod tests {
             f.append(&mut buf, 3).unwrap();
         }
 
-        let msgs = f.read_slice::<MessageBufReader>(2, 106).unwrap();
+        let msgs = f.read_slice(&mut reader, 2, 106).unwrap();
         assert_eq!(4, msgs.len());
 
         for (i, m) in msgs.iter().enumerate() {
@@ -364,7 +368,8 @@ mod tests {
             f.append(&mut buf, 0).unwrap()
         };
 
-        let msg_buf = f.read_slice::<MessageBufReader>(2, f.size() as u32 - 2)
+        let mut reader = MessageBufReader;
+        let msg_buf = f.read_slice(&mut reader, 2, f.size() as u32 - 2)
             .expect("Read after first append failed");
         assert_eq!(3, msg_buf.len());
 
@@ -387,7 +392,8 @@ mod tests {
         assert_eq!(f.size() as u64, size);
 
         // read the log
-        let msg_buf = f.read_slice::<MessageBufReader>(2, f.size() as u32 - 2)
+        let mut reader = MessageBufReader;
+        let msg_buf = f.read_slice(&mut reader, 2, f.size() as u32 - 2)
             .expect("Read after second append failed");
         assert_eq!(2, msg_buf.len());
     }

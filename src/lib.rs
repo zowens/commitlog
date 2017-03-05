@@ -433,12 +433,14 @@ impl CommitLog {
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit.
     #[inline]
     pub fn read(&self, start: Offset, limit: ReadLimit) -> Result<MessageBuf, ReadError> {
-        self.reader::<MessageBufReader>(start, limit)
+        let mut rd = MessageBufReader;
+        self.reader(&mut rd, start, limit)
     }
 
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit
     /// via the reader.
     pub fn reader<R: LogSliceReader>(&self,
+                                     reader: &mut R,
                                      start: Offset,
                                      limit: ReadLimit)
                                      -> Result<R::Result, ReadError> {
@@ -462,7 +464,7 @@ impl CommitLog {
 
         // grab the range from the contained index
         let range = ind.find_segment_range(start, max_bytes, seg_bytes)?;
-        Ok(seg.read_slice::<R>(range.file_position(), range.bytes())?)
+        Ok(seg.read_slice(reader, range.file_position(), range.bytes())?)
     }
 
     /// Truncates a file after the offset supplied. The resulting log will contain
