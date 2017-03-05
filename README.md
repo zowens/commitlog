@@ -3,9 +3,9 @@
 Commit log library for rust. It is intended to be used in various higher-level distributed abstractions on top
 of a distributed log.
 
-[![Crates.io](https://img.shields.io/crates/v/commitlog.svg?maxAge=2592000)]()
+[![Crates.io](https://img.shields.io/crates/v/commitlog.svg?maxAge=2592000)](https://crates.io/commitlog)
 
-[Documentation](https://docs.rs/commitlog/0.0.5/commitlog/)
+[Documentation](https://docs.rs/commitlog/)
 
 
 ## Usage
@@ -14,7 +14,7 @@ First, add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-commitlog = "0.0.5"
+commitlog = "0.0.7"
 ```
 
 ```rust
