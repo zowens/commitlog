@@ -41,7 +41,7 @@
 //! }
 //! ```
 
-#![feature(test, btree_range, collections_bound, pub_restricted, step_by)]
+#![feature(test, collections_bound, step_by)]
 
 // (for test) This is silly...
 #![allow(unused_features, unknown_lints)]

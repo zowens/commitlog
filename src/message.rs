@@ -326,7 +326,7 @@ pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
                                      starting_offset: u64,
                                      base_file_pos: usize)
                                      -> Vec<LogEntryMetadata> {
-    let mut meta = Vec::new();
+    let mut meta = Vec::with_capacity(msg_set.len());
 
     let mut bytes = msg_set.bytes_mut().as_mut();
 
