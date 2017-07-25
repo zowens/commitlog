@@ -345,6 +345,21 @@ impl LogOptions {
     }
 
     /// Bounds the size of a message to a number of bytes.
+    ///
+    /// Attempting to append a larger message returns
+    /// [MessageSizeExceeded](enum.AppendError.html#variant.MessageSizeExceeded).
+    /// This limit includes both the [header length](message/struct.Message.html) and the
+    /// payload length.
+    ///
+    /// ```rust,ignore
+    /// use commitlog::*;
+    /// let mut opts = LogOptions::new("log");
+    /// opts.message_max_bytes(100);
+    /// let mut log = CommitLog::new(opts).unwrap();
+    /// assert!(log.append_msg([1u8; 81].as_ref()).is_err());
+    /// // The msg header is 20 bytes long, leaving 80 bytes for the payload
+    /// assert!(log.append_msg([1u8; 80].as_ref()).is_ok());
+    /// ```
     #[inline]
     pub fn message_max_bytes(&mut self, bytes: usize) -> &mut LogOptions {
         self.message_max_bytes = bytes;
@@ -368,7 +383,7 @@ impl CommitLog {
         Ok(CommitLog { file_set: fs })
     }
 
-    /// Appends a single message to the log, returning the offset appended.
+    /// Appends a single message to the log, with the given payload, returning the offset appended.
     pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
         let mut buf = MessageBuf::default();
         buf.push(payload);
@@ -855,5 +870,13 @@ mod tests {
                    "Invalid file count, expected {:?} got {:?}",
                    expected,
                    dir_files);
+    }
+
+    #[test]
+    pub fn message_header_len_is_20() {
+        let mut buf = MessageBuf::default();
+        // push in an empty message
+        buf.push(b"");
+        assert_eq!(buf.bytes().len(), 20);
     }
 }
