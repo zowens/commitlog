@@ -315,6 +315,7 @@ impl LogOptions {
     /// Creates minimal log options value with a directory containing the log.
     ///
     /// The default values are:
+    ///
     /// - *segment_max_bytes*: 1GB
     /// - *index_max_entries*: 100,000
     /// - *message_max_bytes*: 1mb
