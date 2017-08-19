@@ -325,7 +325,7 @@ impl LogOptions {
             log_dir: log_dir.as_ref().to_owned(),
             log_max_bytes: 1_000_000_000,
             index_max_bytes: 800_000,
-            message_max_bytes: 1000000,
+            message_max_bytes: 1_000_000,
         }
     }
 
@@ -373,7 +373,7 @@ impl CommitLog {
         let mut buf = MessageBuf::default();
         buf.push(payload);
         let res = self.append(&mut buf)?;
-        assert!(res.len() == 1);
+        assert_eq!(res.len(), 1);
         Ok(res.first())
     }
 

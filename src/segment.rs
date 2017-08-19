@@ -106,7 +106,7 @@ impl Segment {
         {
             let mut bytes = [0u8; 2];
             let size = seg_file.read_at(&mut bytes, 0)?;
-            if size < 2 || &bytes != &VERSION_1_MAGIC {
+            if size < 2 || bytes != VERSION_1_MAGIC {
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
                                           format!("Segment file {} does not contain Version 1 \
                                                    magic",

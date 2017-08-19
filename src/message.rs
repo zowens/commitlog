@@ -234,7 +234,7 @@ impl MessageBuf {
         // a properly formed message set
         {
             let mut bytes = bytes.as_slice();
-            while bytes.len() > 0 {
+            while !bytes.is_empty() {
                 // check that the offset, size and hash are present
                 if bytes.len() < 20 {
                     return Err(MessageError::InvalidPayloadLength);
@@ -328,7 +328,7 @@ pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
                                      -> Vec<LogEntryMetadata> {
     let mut meta = Vec::with_capacity(msg_set.len());
 
-    let mut bytes = msg_set.bytes_mut().as_mut();
+    let bytes = msg_set.bytes_mut().as_mut();
 
     let mut rel_off = 0;
     let mut rel_pos = 0;

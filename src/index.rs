@@ -18,7 +18,7 @@ pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 fn binary_search<F>(index: &[u8], f: F) -> usize
     where F: Fn(u32, u32) -> Ordering
 {
-    assert!(index.len() % INDEX_ENTRY_BYTES == 0);
+    assert_eq!(index.len() % INDEX_ENTRY_BYTES, 0);
 
     let mut i = 0usize;
     let mut j = (index.len() / INDEX_ENTRY_BYTES) - 1;
@@ -162,7 +162,7 @@ impl Index {
 
         let next_write_pos = unsafe {
             let index = mmap.as_slice();
-            assert!(index.len() % INDEX_ENTRY_BYTES == 0);
+            assert_eq!(index.len() % INDEX_ENTRY_BYTES, 0);
 
             // check if this is a full or partial index
             let rel_ind_start = index.len() - INDEX_ENTRY_BYTES;
@@ -233,7 +233,7 @@ impl Index {
 
         assert!(abs_offset >= self.base_offset,
                 "Attempt to append to an offset before base offset in index");
-        assert!(self.mode == AccessMode::ReadWrite,
+        assert_eq!(self.mode, AccessMode::ReadWrite,
                 "Attempt to append to readonly index");
 
         // check if we need to resize
@@ -300,7 +300,7 @@ impl Index {
         };
 
 
-        let mut mem = unsafe { self.mmap.as_mut_slice() };
+        let mem = unsafe { self.mmap.as_mut_slice() };
 
         let (off, file_len) = entry!(mem, next_pos);
 
