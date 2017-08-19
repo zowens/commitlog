@@ -1,7 +1,7 @@
-use std::iter::{IntoIterator, FromIterator};
+use std::iter::{FromIterator, IntoIterator};
 use std::io::{self, Read};
 use std::convert::AsMut;
-use byteorder::{LittleEndian, ByteOrder};
+use byteorder::{ByteOrder, LittleEndian};
 use super::Offset;
 use seahash;
 
@@ -129,7 +129,9 @@ impl<'a> Iterator for MessageIter<'a> {
         trace!("message iterator: size {} bytes", size);
         let message_slice = &self.bytes[0..20 + size];
         self.bytes = &self.bytes[20 + size..];
-        Some(Message { bytes: message_slice })
+        Some(Message {
+            bytes: message_slice,
+        })
     }
 }
 
@@ -142,7 +144,9 @@ pub trait MessageSet {
 
     /// Iterator on the messages in the message set.
     fn iter(&self) -> MessageIter {
-        MessageIter { bytes: self.bytes() }
+        MessageIter {
+            bytes: self.bytes(),
+        }
     }
 
     /// Number of messages in the message set.
@@ -213,7 +217,8 @@ impl MessageSetMut for MessageBuf {
 
 impl<R: AsRef<[u8]>> FromIterator<R> for MessageBuf {
     fn from_iter<T>(iter: T) -> MessageBuf
-        where T: IntoIterator<Item = R>
+    where
+        T: IntoIterator<Item = R>,
     {
         let mut buf = MessageBuf::default();
         #[allow(explicit_into_iter_loop)]
@@ -322,10 +327,11 @@ impl MessageBuf {
 
 /// Mutates the buffer with starting offset
 #[doc(hidden)]
-pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S,
-                                     starting_offset: u64,
-                                     base_file_pos: usize)
-                                     -> Vec<LogEntryMetadata> {
+pub fn set_offsets<S: MessageSetMut>(
+    msg_set: &mut S,
+    starting_offset: u64,
+    base_file_pos: usize,
+) -> Vec<LogEntryMetadata> {
     let mut meta = Vec::with_capacity(msg_set.len());
 
     let bytes = msg_set.bytes_mut().as_mut();
@@ -432,9 +438,11 @@ mod tests {
             Err(MessageError::InvalidHash) => true,
             _ => false,
         };
-        assert!(matches_invalid_hash,
-                "Invalid result, not Hash error. Result = {:?}",
-                read_msg_result);
+        assert!(
+            matches_invalid_hash,
+            "Invalid result, not Hash error. Result = {:?}",
+            read_msg_result
+        );
     }
 
 
@@ -452,9 +460,11 @@ mod tests {
             Err(MessageError::InvalidPayloadLength) => true,
             _ => false,
         };
-        assert!(matches_invalid_hash,
-                "Invalid result, not Hasherror. Result = {:?}",
-                read_msg_result);
+        assert!(
+            matches_invalid_hash,
+            "Invalid result, not Hasherror. Result = {:?}",
+            read_msg_result
+        );
     }
 
     #[test]
@@ -510,16 +520,20 @@ mod tests {
     fn bench_message_construct(b: &mut Bencher) {
         b.iter(|| {
             let mut msg_buf = MessageBuf::default();
-            msg_buf.push("719c3b4556066a1c7a06c9d55959d003d9b4627
+            msg_buf.push(
+                "719c3b4556066a1c7a06c9d55959d003d9b4627
 3aabe2eae15ef4ba78321ae2a68b0997a4abbd035a4cdbc8b27d701089a5af63a
 8b81f9dc16a874d0eda0983b79c1a6f79fe3ae61612ba2558562a85595f2f3f07
 fab8faba1b849685b61aad6b131b7041ca79cc662b4c5aad4d1b78fb1034fafa2
-fe4f30207395e399c6d724");
-            msg_buf.push("2cea26f165640d448a9b89f1f871e6fca80a125
+fe4f30207395e399c6d724",
+            );
+            msg_buf.push(
+                "2cea26f165640d448a9b89f1f871e6fca80a125
 5b1daea6752bf99d8c5f90e706deaecddf304b2bf5a5e72e32b29bc7c54018265
 d17317a670ea406fd7e6b485a19f5fb1efe686badb6599d45106b95b55695cd4e
 24729edb312a5dec1bc80e8d8b3ee4b69af1f3a9c801e7fb527e65f7c13c62bb3
-7261c0");
+7261c0",
+            );
             set_offsets(&mut msg_buf, 1250, 0);
         });
     }

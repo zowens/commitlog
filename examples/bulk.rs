@@ -12,16 +12,20 @@ fn main() {
     env_logger::init().unwrap();
 
     // open a directory called 'log' for segment and index storage
-    let opts = LogOptions::new(format!(".log{}",
-                                       SystemTime::now()
-                                           .duration_since(time::UNIX_EPOCH)
-                                           .unwrap()
-                                           .as_secs()));
+    let opts = LogOptions::new(format!(
+        ".log{}",
+        SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    ));
     let mut log = CommitLog::new(opts).unwrap();
 
     let start = SystemTime::now();
     for i in 0..BATCHES {
-        let mut buf = (0..BATCH_SIZE).map(|j| format!("{}-{}", i, j)).collect::<MessageBuf>();
+        let mut buf = (0..BATCH_SIZE)
+            .map(|j| format!("{}-{}", i, j))
+            .collect::<MessageBuf>();
         log.append(&mut buf).expect("Unable to append batch");
 
         if i == 99 || i == 50 {
@@ -30,9 +34,11 @@ fn main() {
     }
 
     let end = SystemTime::now();
-    println!("Appended {} messages in {:?}",
-             BATCH_SIZE * BATCHES,
-             end.duration_since(start));
+    println!(
+        "Appended {} messages in {:?}",
+        BATCH_SIZE * BATCHES,
+        end.duration_since(start)
+    );
 
     // read the log
     let start = SystemTime::now();
@@ -51,10 +57,12 @@ fn main() {
             }
             None => {
                 let end = SystemTime::now();
-                println!("Read {} messages in {:?}, {} iterations",
-                         total,
-                         end.duration_since(start),
-                         iterations);
+                println!(
+                    "Read {} messages in {:?}, {} iterations",
+                    total,
+                    end.duration_since(start),
+                    iterations
+                );
                 break;
             }
 

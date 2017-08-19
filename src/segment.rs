@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::fs::{self, OpenOptions, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use super::message::*;
 use super::reader::*;
@@ -53,7 +53,8 @@ impl From<io::Error> for SegmentAppendError {
 
 impl Segment {
     pub fn new<P>(log_dir: P, base_offset: u64, max_bytes: usize) -> io::Result<Segment>
-        where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
         let log_path = {
             // the log is of the form BASE_OFFSET.log
@@ -64,7 +65,8 @@ impl Segment {
             path_buf
         };
 
-        let mut f = OpenOptions::new().write(true)
+        let mut f = OpenOptions::new()
+            .write(true)
             .read(true)
             .create_new(true)
             .append(true)
@@ -83,9 +85,11 @@ impl Segment {
     }
 
     pub fn open<P>(seg_path: P, max_bytes: usize) -> io::Result<Segment>
-        where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
-        let seg_file = OpenOptions::new().read(true)
+        let seg_file = OpenOptions::new()
+            .read(true)
             .write(true)
             .append(true)
             .open(&seg_path)?;
@@ -94,8 +98,10 @@ impl Segment {
         let base_offset = match u64::from_str_radix(&filename[0..SEGMENT_FILE_NAME_LEN], 10) {
             Ok(v) => v,
             Err(_) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                          "Segment file name does not parse as u64"))
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Segment file name does not parse as u64",
+                ))
             }
         };
 
@@ -107,10 +113,14 @@ impl Segment {
             let mut bytes = [0u8; 2];
             let size = seg_file.read_at(&mut bytes, 0)?;
             if size < 2 || bytes != VERSION_1_MAGIC {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                          format!("Segment file {} does not contain Version 1 \
-                                                   magic",
-                                                  filename)));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Segment file {} does not contain Version 1 \
+                         magic",
+                        filename
+                    ),
+                ));
             }
         }
 
@@ -134,10 +144,11 @@ impl Segment {
         self.base_offset
     }
 
-    pub fn append<T: MessageSetMut>(&mut self,
-                                    payload: &mut T,
-                                    starting_offset: Offset)
-                                    -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
+    pub fn append<T: MessageSetMut>(
+        &mut self,
+        payload: &mut T,
+        starting_offset: Offset,
+    ) -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
         // ensure we have the capacity
         let payload_len = payload.bytes().len();
         if payload_len + self.write_pos > self.max_bytes {
@@ -155,11 +166,12 @@ impl Segment {
         self.file.flush()
     }
 
-    pub fn read_slice<T: LogSliceReader>(&self,
-                                         reader: &mut T,
-                                         file_pos: u32,
-                                         bytes: u32)
-                                         -> Result<T::Result, MessageError> {
+    pub fn read_slice<T: LogSliceReader>(
+        &self,
+        reader: &mut T,
+        file_pos: u32,
+        bytes: u32,
+    ) -> Result<T::Result, MessageError> {
         reader.read_from(&self.file, file_pos, bytes as usize)
     }
 
@@ -292,8 +304,7 @@ mod tests {
 
         // byte max contains message 0
         let mut reader = MessageBufReader;
-        let msgs = f.read_slice(&mut reader, 2, meta[1].file_pos - 2)
-            .unwrap();
+        let msgs = f.read_slice(&mut reader, 2, meta[1].file_pos - 2).unwrap();
 
         assert_eq!(1, msgs.len());
     }

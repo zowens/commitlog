@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use rand::{Rng, OsRng};
+use rand::{OsRng, Rng};
 
 pub struct TestDir {
     path: PathBuf,

@@ -40,9 +40,7 @@
 //!     //    1 - second message
 //! }
 //! ```
-
 #![feature(test, collections_bound, step_by)]
-
 // (for test) This is silly...
 #![allow(unused_features, unknown_lints)]
 
@@ -283,8 +281,7 @@ impl From<MessageError> for ReadError {
     fn from(e: MessageError) -> ReadError {
         match e {
             MessageError::IoError(e) => ReadError::Io(e),
-            MessageError::InvalidHash |
-            MessageError::InvalidPayloadLength => ReadError::CorruptLog,
+            MessageError::InvalidHash | MessageError::InvalidPayloadLength => ReadError::CorruptLog,
         }
     }
 }
@@ -293,10 +290,10 @@ impl From<RangeFindError> for ReadError {
     fn from(e: RangeFindError) -> ReadError {
         match e {
             RangeFindError::OffsetNotAppended => ReadError::NoSuchSegment,
-            RangeFindError::MessageExceededMaxBytes => {
-                ReadError::Io(io::Error::new(io::ErrorKind::InvalidInput,
-                                             "Message exceeded max byte size"))
-            }
+            RangeFindError::MessageExceededMaxBytes => ReadError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Message exceeded max byte size",
+            )),
         }
     }
 }
@@ -319,7 +316,8 @@ impl LogOptions {
     /// - *index_max_entries*: 100,000
     /// - *message_max_bytes*: 1mb
     pub fn new<P>(log_dir: P) -> LogOptions
-        where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
         LogOptions {
             log_dir: log_dir.as_ref().to_owned(),
@@ -379,7 +377,8 @@ impl CommitLog {
 
     /// Appends log entrites to the commit log, returning the offsets appended.
     pub fn append<T>(&mut self, buf: &mut T) -> Result<OffsetRange, AppendError>
-        where T: MessageSetMut
+    where
+        T: MessageSetMut,
     {
         //Check if given message exceeded the max size
         if buf.bytes().len() > self.file_set.log_options().message_max_bytes {
@@ -390,26 +389,28 @@ impl CommitLog {
         let start_off = self.file_set.active_index_mut().next_offset();
         let entry_res = self.file_set.active_segment_mut().append(buf, start_off);
         let entries = entry_res.or_else(|e| {
-                match e {
-                    // if the log is full, gracefully close the current segment
-                    // and create new one starting from the new offset
-                    SegmentAppendError::LogFull => {
-                        try!(self.file_set.roll_segment());
+            match e {
+                // if the log is full, gracefully close the current segment
+                // and create new one starting from the new offset
+                SegmentAppendError::LogFull => {
+                    try!(self.file_set.roll_segment());
 
-                        // try again, giving up if we have to
-                        self.file_set
-                            .active_segment_mut()
-                            .append(buf, start_off)
-                            .map_err(|_| AppendError::FreshSegmentNotWritable)
-                    }
-                    SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
+                    // try again, giving up if we have to
+                    self.file_set
+                        .active_segment_mut()
+                        .append(buf, start_off)
+                        .map_err(|_| AppendError::FreshSegmentNotWritable)
                 }
-            })?;
+                SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
+            }
+        })?;
 
         // write to the index
         for meta in &entries {
             // TODO: what happens when this errors out? Do we truncate the log...?
-            self.file_set.active_index_mut().append(meta.offset, meta.file_pos)?;
+            self.file_set
+                .active_index_mut()
+                .append(meta.offset, meta.file_pos)?;
         }
 
         // TODO: fix this with Option?
@@ -439,11 +440,12 @@ impl CommitLog {
 
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit
     /// via the reader.
-    pub fn reader<R: LogSliceReader>(&self,
-                                     reader: &mut R,
-                                     start: Offset,
-                                     limit: ReadLimit)
-                                     -> Result<R::Result, ReadError> {
+    pub fn reader<R: LogSliceReader>(
+        &self,
+        reader: &mut R,
+        start: Offset,
+        limit: ReadLimit,
+    ) -> Result<R::Result, ReadError> {
         // TODO: can this be caught at the index level insead?
         if start >= self.file_set.active_index().next_offset() {
             return Ok(R::empty());
@@ -464,7 +466,9 @@ impl CommitLog {
 
         // grab the range from the contained index
         let range = ind.find_segment_range(start, max_bytes, seg_bytes)?;
-        Ok(seg.read_slice(reader, range.file_position(), range.bytes())?)
+        Ok(
+            seg.read_slice(reader, range.file_position(), range.bytes())?,
+        )
     }
 
     /// Truncates a file after the offset supplied. The resulting log will contain
@@ -475,8 +479,10 @@ impl CommitLog {
         // remove index/segment files rolled after the offset
         let to_remove = self.file_set.take_after(offset);
         for p in to_remove {
-            trace!("Removing segment and index starting at {}",
-                   p.0.starting_offset());
+            trace!(
+                "Removing segment and index starting at {}",
+                p.0.starting_offset()
+            );
             assert!(p.0.starting_offset() > offset);
 
             p.0.remove()?;
@@ -514,8 +520,10 @@ mod tests {
 
         assert_eq!(vec![2, 3, 4, 5, 6, 7], range.iter().collect::<Vec<u64>>());
 
-        assert_eq!(vec![7, 6, 5, 4, 3, 2],
-                   range.iter().rev().collect::<Vec<u64>>());
+        assert_eq!(
+            vec![7, 6, 5, 4, 3, 2],
+            range.iter().rev().collect::<Vec<u64>>()
+        );
     }
 
     #[test]
@@ -564,11 +572,15 @@ mod tests {
             log.flush().unwrap();
         }
 
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+            ],
+        );
     }
 
     #[test]
@@ -590,26 +602,36 @@ mod tests {
         {
             let active_index_read = log.read(82, ReadLimit::max_bytes(168)).unwrap();
             assert_eq!(6, active_index_read.len());
-            assert_eq!(vec![82, 83, 84, 85, 86, 87],
-                       active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+            assert_eq!(
+                vec![82, 83, 84, 85, 86, 87],
+                active_index_read
+                    .iter()
+                    .map(|v| v.offset())
+                    .collect::<Vec<_>>()
+            );
         }
 
         {
-            let old_index_read = log.read(5, ReadLimit::max_bytes(112))
-                .unwrap();
+            let old_index_read = log.read(5, ReadLimit::max_bytes(112)).unwrap();
             assert_eq!(4, old_index_read.len());
-            assert_eq!(vec![5, 6, 7, 8],
-                       old_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+            assert_eq!(
+                vec![5, 6, 7, 8],
+                old_index_read
+                    .iter()
+                    .map(|v| v.offset())
+                    .collect::<Vec<_>>()
+            );
         }
 
         // read at the boundary (not going to get full message limit)
         {
             // log rolls at offset 36
-            let boundary_read = log.read(33, ReadLimit::max_bytes(100))
-                .unwrap();
+            let boundary_read = log.read(33, ReadLimit::max_bytes(100)).unwrap();
             assert_eq!(3, boundary_read.len());
-            assert_eq!(vec![33, 34, 35],
-                       boundary_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+            assert_eq!(
+                vec![33, 34, 35],
+                boundary_read.iter().map(|v| v.offset()).collect::<Vec<_>>()
+            );
         }
     }
 
@@ -639,8 +661,13 @@ mod tests {
             let active_index_read = log.read(82, ReadLimit::max_bytes(130)).unwrap();
 
             assert_eq!(4, active_index_read.len());
-            assert_eq!(vec![82, 83, 84, 85],
-                       active_index_read.iter().map(|v| v.offset()).collect::<Vec<_>>());
+            assert_eq!(
+                vec![82, 83, 84, 85],
+                active_index_read
+                    .iter()
+                    .map(|v| v.offset())
+                    .collect::<Vec<_>>()
+            );
 
             let off = log.append_msg("moar data").unwrap();
             assert_eq!(99, off);
@@ -728,15 +755,19 @@ mod tests {
         }
 
         // ensure we have the expected index/logs
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index",
-                          "00000000000000000004.log",
-                          "00000000000000000004.index",
-                          "00000000000000000006.log",
-                          "00000000000000000006.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+                "00000000000000000004.log",
+                "00000000000000000004.index",
+                "00000000000000000006.log",
+                "00000000000000000006.index",
+            ],
+        );
 
         // truncate to offset 2 (should remove 2 messages)
         log.truncate(3).expect("Unable to truncate file");
@@ -744,11 +775,15 @@ mod tests {
         assert_eq!(Some(3), log.last_offset());
 
         // ensure we have the expected index/logs
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+            ],
+        );
     }
 
     #[test]
@@ -769,15 +804,19 @@ mod tests {
         }
 
         // ensure we have the expected index/logs
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index",
-                          "00000000000000000004.log",
-                          "00000000000000000004.index",
-                          "00000000000000000006.log",
-                          "00000000000000000006.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+                "00000000000000000004.log",
+                "00000000000000000004.index",
+                "00000000000000000006.log",
+                "00000000000000000006.index",
+            ],
+        );
 
         // truncate to offset 2 (should remove 2 messages)
         log.truncate(2).expect("Unable to truncate file");
@@ -785,11 +824,15 @@ mod tests {
         assert_eq!(Some(2), log.last_offset());
 
         // ensure we have the expected index/logs
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+            ],
+        );
     }
 
     #[test]
@@ -810,15 +853,19 @@ mod tests {
         }
 
         // ensure we have the expected index/logs
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index",
-                          "00000000000000000004.log",
-                          "00000000000000000004.index",
-                          "00000000000000000006.log",
-                          "00000000000000000006.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+                "00000000000000000004.log",
+                "00000000000000000004.index",
+                "00000000000000000006.log",
+                "00000000000000000006.index",
+            ],
+        );
 
         // truncate to offset 2 (should remove 2 messages)
         log.truncate(7).expect("Unable to truncate file");
@@ -826,34 +873,54 @@ mod tests {
         assert_eq!(Some(6), log.last_offset());
 
         // ensure we have the expected index/logs
-        expect_files(&dir,
-                     vec!["00000000000000000000.index",
-                          "00000000000000000000.log",
-                          "00000000000000000002.log",
-                          "00000000000000000002.index",
-                          "00000000000000000004.log",
-                          "00000000000000000004.index",
-                          "00000000000000000006.log",
-                          "00000000000000000006.index"]);
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+                "00000000000000000004.log",
+                "00000000000000000004.index",
+                "00000000000000000006.log",
+                "00000000000000000006.index",
+            ],
+        );
     }
 
     fn expect_files<P: AsRef<Path>, I>(dir: P, files: I)
-        where I: IntoIterator<Item = &'static str>
+    where
+        I: IntoIterator<Item = &'static str>,
     {
         let dir_files = fs::read_dir(&dir)
             .unwrap()
-            .map(|e| e.unwrap().path().file_name().unwrap().to_str().unwrap().to_string())
+            .map(|e| {
+                e.unwrap()
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            })
             .collect::<HashSet<String>>();
-        let expected = files.into_iter().map(|s| s.to_string()).collect::<HashSet<String>>();
-        assert_eq!(dir_files.len(),
-                   expected.len(),
-                   "Invalid file count, expected {:?} got {:?}",
-                   expected,
-                   dir_files);
-        assert_eq!(dir_files.intersection(&expected).count(),
-                   expected.len(),
-                   "Invalid file count, expected {:?} got {:?}",
-                   expected,
-                   dir_files);
+        let expected = files
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<HashSet<String>>();
+        assert_eq!(
+            dir_files.len(),
+            expected.len(),
+            "Invalid file count, expected {:?} got {:?}",
+            expected,
+            dir_files
+        );
+        assert_eq!(
+            dir_files.intersection(&expected).count(),
+            expected.len(),
+            "Invalid file count, expected {:?} got {:?}",
+            expected,
+            dir_files
+        );
     }
 }

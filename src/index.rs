@@ -1,9 +1,9 @@
-use byteorder::{LittleEndian, ByteOrder};
+use byteorder::{ByteOrder, LittleEndian};
 use memmap::{Mmap, MmapViewSync, Protection};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
-use std::fs::{self, OpenOptions, File};
-use std::{u64, usize};
+use std::fs::{self, File, OpenOptions};
+use std::{usize, u64};
 use std::cmp::Ordering;
 use super::Offset;
 
@@ -16,7 +16,8 @@ pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
 #[inline]
 fn binary_search<F>(index: &[u8], f: F) -> usize
-    where F: Fn(u32, u32) -> Ordering
+where
+    F: Fn(u32, u32) -> Ordering,
 {
     assert_eq!(index.len() % INDEX_ENTRY_BYTES, 0);
 
@@ -102,7 +103,8 @@ pub enum AccessMode {
 
 impl Index {
     pub fn new<P>(log_dir: P, base_offset: u64, file_bytes: usize) -> io::Result<Index>
-        where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
         // open the file, expecting to create it
         let index_path = {
@@ -115,7 +117,8 @@ impl Index {
 
         info!("Creating index file {:?}", &index_path);
 
-        let index_file = OpenOptions::new().read(true)
+        let index_file = OpenOptions::new()
+            .read(true)
             .write(true)
             .append(true)
             .create_new(true)
@@ -128,7 +131,8 @@ impl Index {
             index_file.set_len(file_bytes as u64)?;
         }
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?
+            .into_view_sync();
 
         Ok(Index {
             file: index_file,
@@ -141,9 +145,11 @@ impl Index {
     }
 
     pub fn open<P>(index_path: P) -> io::Result<Index>
-        where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
-        let index_file = OpenOptions::new().read(true)
+        let index_file = OpenOptions::new()
+            .read(true)
             .write(true)
             .append(true)
             .open(&index_path)?;
@@ -153,12 +159,15 @@ impl Index {
         let base_offset = match u64::from_str_radix(&filename[0..INDEX_FILE_NAME_LEN], 10) {
             Ok(v) => v,
             Err(_) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                          "Index file name does not parse as u64"))
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Index file name does not parse as u64",
+                ))
             }
         };
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?
+            .into_view_sync();
 
         let next_write_pos = unsafe {
             let index = mmap.as_slice();
@@ -169,8 +178,7 @@ impl Index {
             let last_val = LittleEndian::read_u32(&index[rel_ind_start..rel_ind_start + 4]);
             if last_val == 0 {
                 // partial index, search for break point
-                INDEX_ENTRY_BYTES *
-                binary_search(index, |rel_off, _| {
+                INDEX_ENTRY_BYTES * binary_search(index, |rel_off, _| {
                     // if the relative offset is 0 then go to the left,
                     // otherwise go to the right to find a slot with 0
                     //
@@ -187,9 +195,11 @@ impl Index {
             }
         };
 
-        info!("Opening index {}, next write pos {}",
-              filename,
-              next_write_pos);
+        info!(
+            "Opening index {}, next write pos {}",
+            filename,
+            next_write_pos
+        );
 
         Ok(Index {
             file: index_file,
@@ -224,17 +234,23 @@ impl Index {
         // unmap the file (Set to dummy anonymous map)
         self.mmap = Mmap::anonymous(32, Protection::ReadWrite)?.into_view_sync();
         self.file.set_len(new_len as u64)?;
-        self.mmap = Mmap::open(&self.file, Protection::ReadWrite)?.into_view_sync();
+        self.mmap = Mmap::open(&self.file, Protection::ReadWrite)?
+            .into_view_sync();
         Ok(())
     }
 
     pub fn append(&mut self, abs_offset: u64, position: u32) -> io::Result<()> {
         trace!("Index append {} => {}", abs_offset, position);
 
-        assert!(abs_offset >= self.base_offset,
-                "Attempt to append to an offset before base offset in index");
-        assert_eq!(self.mode, AccessMode::ReadWrite,
-                "Attempt to append to readonly index");
+        assert!(
+            abs_offset >= self.base_offset,
+            "Attempt to append to an offset before base offset in index"
+        );
+        assert_eq!(
+            self.mode,
+            AccessMode::ReadWrite,
+            "Attempt to append to readonly index"
+        );
 
         // check if we need to resize
         if self.size() < (self.next_write_pos + INDEX_ENTRY_BYTES) {
@@ -262,10 +278,12 @@ impl Index {
             if self.next_write_pos < self.mmap.len() {
                 self.mmap.restrict(0, self.next_write_pos)?;
                 if let Err(e) = self.file.set_len(self.next_write_pos as u64) {
-                    warn!("Unable to truncate index file {:020}.{} to proper length: {:?}",
-                          self.base_offset,
-                          INDEX_FILE_NAME_EXTENSION,
-                          e);
+                    warn!(
+                        "Unable to truncate index file {:020}.{} to proper length: {:?}",
+                        self.base_offset,
+                        INDEX_FILE_NAME_EXTENSION,
+                        e
+                    );
                 }
             }
 
@@ -314,9 +332,11 @@ impl Index {
             return None;
         }
 
-        trace!("Start of truncation at offset {}, to segment length {}",
-               offset,
-               file_len);
+        trace!(
+            "Start of truncation at offset {}, to segment length {}",
+            offset,
+            file_len
+        );
 
         // override file positions > offset
         for elem in &mut mem[next_pos..self.next_write_pos].iter_mut() {
@@ -338,7 +358,8 @@ impl Index {
         if self.next_write_pos == 0 {
             self.base_offset
         } else {
-            let entry = self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1).unwrap();
+            let entry = self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
+                .unwrap();
             entry.0 + 1
         }
     }
@@ -370,26 +391,26 @@ impl Index {
     /// the offset has not been written to this index and None value is returned.
     #[allow(dead_code)]
     pub fn find(&self, offset: Offset) -> Option<(Offset, u32)> {
-        self.find_index_pos(offset)
-            .and_then(|p| {
-                let mem_slice = unsafe { self.mmap.as_slice() };
-                let (rel_off, file_pos) = entry!(mem_slice, p);
-                let abs_off = rel_off as u64 + self.base_offset;
-                if abs_off < offset {
-                    None
-                } else {
-                    Some((abs_off, file_pos))
-                }
-            })
+        self.find_index_pos(offset).and_then(|p| {
+            let mem_slice = unsafe { self.mmap.as_slice() };
+            let (rel_off, file_pos) = entry!(mem_slice, p);
+            let abs_off = rel_off as u64 + self.base_offset;
+            if abs_off < offset {
+                None
+            } else {
+                Some((abs_off, file_pos))
+            }
+        })
     }
 
     /// Finds the longest message set range within a single segment aligning to the
     /// `max_bytes` parameter.
-    pub fn find_segment_range(&self,
-                              offset: Offset,
-                              max_bytes: u32,
-                              seg_bytes: u32)
-                              -> Result<MessageSetRange, RangeFindError> {
+    pub fn find_segment_range(
+        &self,
+        offset: Offset,
+        max_bytes: u32,
+        seg_bytes: u32,
+    ) -> Result<MessageSetRange, RangeFindError> {
         assert!(max_bytes > 0, "Cannot request 0 bytes to be read");
 
         // position within the index to start finding a sequence
@@ -415,8 +436,10 @@ impl Index {
             return Err(RangeFindError::MessageExceededMaxBytes);
         }
 
-        let end_ind_pos = binary_search(search_range,
-                                        |_, pos| (pos - start_file_pos).cmp(&max_bytes));
+        let end_ind_pos = binary_search(
+            search_range,
+            |_, pos| (pos - start_file_pos).cmp(&max_bytes),
+        );
 
         let pos = {
             // binary search will choose the next entry when the left value is less, and the
@@ -461,16 +484,20 @@ impl Index {
             // read exact entry
             let entry_pos = rel_offset as usize * INDEX_ENTRY_BYTES;
             let rel_offset_val = LittleEndian::read_u32(&mem_slice[entry_pos..entry_pos + 4]);
-            trace!("Found relative offset. rel_offset = {}, entry offset = {}",
-                   rel_offset,
-                   rel_offset_val);
+            trace!(
+                "Found relative offset. rel_offset = {}, entry offset = {}",
+                rel_offset,
+                rel_offset_val
+            );
             if rel_offset_val == rel_offset {
                 return Some(entry_pos);
             }
         }
 
-        let i = binary_search(&mem_slice[0..self.next_write_pos],
-                              |v, _| v.cmp(&rel_offset));
+        let i = binary_search(
+            &mem_slice[0..self.next_write_pos],
+            |v, _| v.cmp(&rel_offset),
+        );
         trace!("Found offset {} at entry {}", offset, i);
 
         if i < self.next_write_pos / INDEX_ENTRY_BYTES {
@@ -751,27 +778,33 @@ mod tests {
 
         // test message within range, not including last message
         let res = index.find_segment_range(10, 20, 60);
-        assert_eq!(Ok(MessageSetRange {
-                       file_pos: 10,
-                       bytes: 20,
-                   }),
-                   res);
+        assert_eq!(
+            Ok(MessageSetRange {
+                file_pos: 10,
+                bytes: 20,
+            }),
+            res
+        );
 
         // test message within range, not including last message, not first
         let res = index.find_segment_range(11, 20, 60);
-        assert_eq!(Ok(MessageSetRange {
-                       file_pos: 20,
-                       bytes: 20,
-                   }),
-                   res);
+        assert_eq!(
+            Ok(MessageSetRange {
+                file_pos: 20,
+                bytes: 20,
+            }),
+            res
+        );
 
         // test message within rest of range, not including last message
         let res = index.find_segment_range(11, 80, 60);
-        assert_eq!(Ok(MessageSetRange {
-                       file_pos: 20,
-                       bytes: 40,
-                   }),
-                   res);
+        assert_eq!(
+            Ok(MessageSetRange {
+                file_pos: 20,
+                bytes: 40,
+            }),
+            res
+        );
     }
 
     #[test]
