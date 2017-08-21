@@ -1,7 +1,7 @@
 [package]
 authors = ["Zack Owens <zowens2009@gmail.com>"]
 name = "commitlog"
-version = "0.0.7"
+version = "0.0.8"
 description = "Implementation of an append-only commit log backed by disk."
 repository = "https://github.com/zowens/commitlog"
 homepage = "https://github.com/zowens/commitlog"

@@ -14,7 +14,7 @@ First, add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-commitlog = "0.0.7"
+commitlog = "0.0.8"
 ```
 
 ```rust
