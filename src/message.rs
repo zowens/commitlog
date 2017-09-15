@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use std::convert::AsMut;
 use byteorder::{ByteOrder, LittleEndian};
 use super::Offset;
-use seahash;
+use crc32c::crc32c;
 
 #[derive(Debug)]
 pub enum MessageError {
@@ -39,54 +39,80 @@ macro_rules! read_n {
     })
 }
 
+const HEADER_SIZE: usize = 20;
+
+macro_rules! hdr {
+    (offset, $buf:expr) => (
+        LittleEndian::read_u64(&$buf[0..8])
+    );
+    (offset, $buf:expr, $v:expr) => (
+        LittleEndian::write_u64(&mut $buf[0..8], $v)
+    );
+    (size, $buf:expr) => (
+        LittleEndian::read_u32(&$buf[8..12])
+    );
+    (size, $buf:expr, $v:expr) => (
+        LittleEndian::write_u32(&mut $buf[8..12], $v)
+    );
+    (hash, $buf:expr) => (
+        LittleEndian::read_u32(&$buf[12..16])
+    );
+    (hash, $buf:expr, $v:expr) => (
+        LittleEndian::write_u32(&mut $buf[12..16], $v)
+    );
+}
+
+macro_rules! payload {
+    ($e:expr) => (
+        &$e[HEADER_SIZE..]
+    )
+}
+
 
 /// Messages contain finite-sized binary values with an offset from
 /// the beginning of the log.
 ///
-/// | Bytes     | Encoding          | Value        |
-/// | --------- | ----------------- | ------------ |
-/// | 0-7       | Little Endian u64 | Offset       |
-/// | 8-11      | Little Endian u32 | Payload Size |
-/// | 12-19     | Little Endian u64 | Sea Hash     |
-/// | 20+       |                   | Payload      |
-///
-/// Seahash is chosen because of its performance and quality. It is seeded
-/// with the following constants:
-/// `0x16f11fe89b0d677c`, `0xb480a793d8e6c86c`, `0x6fe2e5aaf078ebc9`, `0x14f994a4c5259381`
+/// | Bytes     | Encoding          | Value            |
+/// | --------- | ----------------- | ---------------- |
+/// | 0-7       | Little Endian u64 | Offset           |
+/// | 8-11      | Little Endian u32 | Payload Size     |
+/// | 12-15     | Little Endian u32 | CRC32 of payload |
+/// | 16-19     |                   | Reserved         |
+/// | 20+       |                   | Payload          |
 #[derive(Debug)]
 pub struct Message<'a> {
     bytes: &'a [u8],
 }
 
 impl<'a> Message<'a> {
-    /// Seahash of the payload.
+    /// crc32c of the payload.
     #[inline]
-    pub fn hash(&self) -> u64 {
-        LittleEndian::read_u64(&self.bytes[12..20])
+    pub fn hash(&self) -> u32 {
+        hdr!(hash, self.bytes)
     }
 
     /// Size of the payload.
     #[inline]
     pub fn size(&self) -> u32 {
-        LittleEndian::read_u32(&self.bytes[8..12])
+        hdr!(size, self.bytes)
     }
 
     /// Offset of the message in the log.
     #[inline]
     pub fn offset(&self) -> Offset {
-        LittleEndian::read_u64(&self.bytes[0..8])
+        hdr!(offset, self.bytes)
     }
 
     /// Payload of the message.
     #[inline]
     pub fn payload(&self) -> &[u8] {
-        &self.bytes[20..]
+        payload!(self.bytes)
     }
 
     /// Check that the hash matches the hash of the payload.
     #[inline]
     pub fn verify_hash(&self) -> bool {
-        self.hash() == seahash::hash(self.payload())
+        self.hash() == crc32c(self.payload())
     }
 
 
@@ -94,17 +120,12 @@ impl<'a> Message<'a> {
     pub fn serialize<B: AsRef<[u8]>>(bytes: &mut Vec<u8>, offset: u64, payload: B) {
         let payload_slice = payload.as_ref();
 
-        // offset
-        let mut buf = vec![0; 8];
-        LittleEndian::write_u64(&mut buf, offset);
-        bytes.extend_from_slice(&buf);
+        let mut buf = [0; HEADER_SIZE];
+        hdr!(offset, buf, offset);
+        hdr!(size, buf, payload_slice.len() as u32);
+        hdr!(hash, buf, crc32c(payload_slice));
 
-        // size
-        LittleEndian::write_u32(&mut buf[0..4], payload_slice.len() as u32);
-        bytes.extend_from_slice(&buf[0..4]);
-
-        // hash
-        LittleEndian::write_u64(&mut buf, seahash::hash(payload_slice));
+        // add the header
         bytes.extend_from_slice(&buf);
 
         // payload
@@ -121,14 +142,17 @@ impl<'a> Iterator for MessageIter<'a> {
     type Item = Message<'a>;
 
     fn next(&mut self) -> Option<Message<'a>> {
-        if self.bytes.len() < 20 {
+        if self.bytes.len() < HEADER_SIZE {
             return None;
         }
 
-        let size = LittleEndian::read_u32(&self.bytes[8..12]) as usize;
+        let size = hdr!(size, self.bytes) as usize;
+
         trace!("message iterator: size {} bytes", size);
-        let message_slice = &self.bytes[0..20 + size];
-        self.bytes = &self.bytes[20 + size..];
+        assert!(self.bytes.len() >= HEADER_SIZE + size);
+
+        let message_slice = &self.bytes[0..HEADER_SIZE + size];
+        self.bytes = &self.bytes[HEADER_SIZE + size..];
         Some(Message {
             bytes: message_slice,
         })
@@ -241,18 +265,20 @@ impl MessageBuf {
             let mut bytes = bytes.as_slice();
             while !bytes.is_empty() {
                 // check that the offset, size and hash are present
-                if bytes.len() < 20 {
+                if bytes.len() < HEADER_SIZE {
                     return Err(MessageError::InvalidPayloadLength);
                 }
 
-                let size = LittleEndian::read_u32(&bytes[8..12]) as usize;
-                let hash = LittleEndian::read_u64(&bytes[12..20]);
-                if bytes.len() < (20 + size) {
+                let size = hdr!(size, bytes) as usize;
+                let hash = hdr!(hash, bytes);
+
+                let next_msg_offset = HEADER_SIZE + size;
+                if bytes.len() < next_msg_offset {
                     return Err(MessageError::InvalidPayloadLength);
                 }
 
                 // check the hash
-                let payload_hash = seahash::hash(&bytes[20..(size + 20)]);
+                let payload_hash = crc32c(&bytes[HEADER_SIZE..next_msg_offset]);
                 if payload_hash != hash {
                     return Err(MessageError::InvalidHash);
                 }
@@ -261,7 +287,7 @@ impl MessageBuf {
                 msgs += 1;
 
                 // move the slice along
-                bytes = &bytes[20 + size..];
+                bytes = &bytes[next_msg_offset..];
             }
         }
         Ok(MessageBuf {
@@ -296,27 +322,21 @@ impl MessageBuf {
 
     /// Reads a single message. The reader is expected to have a full message serialized.
     pub fn read<R: Read>(&mut self, reader: &mut R) -> Result<(), MessageError> {
-        let mut offset_buf = vec![0; 8];
-        read_n!(reader, offset_buf, 8, "Unable to read offset");
-        let mut size_buf = vec![0; 4];
-        read_n!(reader, size_buf, 4, "Unable to read size");
-        let mut hash_buf = vec![0; 8];
-        read_n!(reader, hash_buf, 8, "Unable to read hash");
+        let mut buf = [0; HEADER_SIZE];
+        read_n!(reader, buf, HEADER_SIZE, "Unable to read header");
 
-        let size = LittleEndian::read_u32(&size_buf) as usize;
-        let hash = LittleEndian::read_u64(&hash_buf);
+        let size = hdr!(size, buf) as usize;
+        let hash = hdr!(hash, buf);
 
         let mut bytes = vec![0; size];
         read_n!(reader, bytes, size);
 
-        let payload_hash = seahash::hash(&bytes);
+        let payload_hash = crc32c(&bytes);
         if payload_hash != hash {
             return Err(MessageError::InvalidHash);
         }
 
-        self.bytes.extend(offset_buf);
-        self.bytes.extend(size_buf);
-        self.bytes.extend(hash_buf);
+        self.bytes.extend_from_slice(&buf);
         self.bytes.extend(bytes);
 
         self.len += 1;
@@ -349,11 +369,12 @@ pub fn set_offsets<S: MessageSetMut>(
         });
 
         // write the absolute offset into the byte buffer
-        LittleEndian::write_u64(&mut bytes[rel_pos..rel_pos + 8], abs_off);
+        let msg_start_buf = &mut bytes[rel_pos..];
+        hdr!(offset, msg_start_buf, abs_off);
 
         // bump the relative position of the message
-        let payload_size = LittleEndian::read_u32(&bytes[(rel_pos + 8)..(rel_pos + 12)]);
-        rel_pos += 20 + payload_size as usize;
+        let payload_size = hdr!(size, msg_start_buf);
+        rel_pos += HEADER_SIZE + payload_size as usize;
         rel_off += 1;
     }
 
@@ -389,7 +410,7 @@ mod tests {
         {
             let msg = msg_it.next().unwrap();
             assert_eq!(msg.payload(), b"123456789");
-            assert_eq!(msg.hash(), 13331223911193280505);
+            assert_eq!(msg.hash(), 3808858755);
             assert_eq!(msg.size(), 9u32);
             assert_eq!(msg.offset(), 100);
             assert!(msg.verify_hash());
@@ -397,7 +418,7 @@ mod tests {
         {
             let msg = msg_it.next().unwrap();
             assert_eq!(msg.payload(), b"000000000");
-            assert_eq!(msg.hash(), 8467704495454493044);
+            assert_eq!(msg.hash(), 49759193);
             assert_eq!(msg.size(), 9u32);
             assert_eq!(msg.offset(), 101);
             assert!(msg.verify_hash());

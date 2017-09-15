@@ -131,8 +131,7 @@ impl Index {
             index_file.set_len(file_bytes as u64)?;
         }
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?
-            .into_view_sync();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
 
         Ok(Index {
             file: index_file,
@@ -166,8 +165,7 @@ impl Index {
             }
         };
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?
-            .into_view_sync();
+        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
 
         let next_write_pos = unsafe {
             let index = mmap.as_slice();
@@ -234,8 +232,7 @@ impl Index {
         // unmap the file (Set to dummy anonymous map)
         self.mmap = Mmap::anonymous(32, Protection::ReadWrite)?.into_view_sync();
         self.file.set_len(new_len as u64)?;
-        self.mmap = Mmap::open(&self.file, Protection::ReadWrite)?
-            .into_view_sync();
+        self.mmap = Mmap::open(&self.file, Protection::ReadWrite)?.into_view_sync();
         Ok(())
     }
 

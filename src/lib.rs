@@ -44,19 +44,19 @@
 // (for test) This is silly...
 #![allow(unused_features, unknown_lints)]
 
+extern crate byteorder;
+extern crate crc32c;
 #[macro_use]
 extern crate log;
-extern crate seahash;
 extern crate memmap;
-extern crate byteorder;
 
 #[cfg(test)]
 extern crate env_logger;
 
 #[cfg(test)]
-extern crate test;
-#[cfg(test)]
 extern crate rand;
+#[cfg(test)]
+extern crate test;
 
 pub mod reader;
 pub mod message;
@@ -406,6 +406,7 @@ impl CommitLog {
         })?;
 
         // write to the index
+        // TODO: amortize the cost of adding to the index
         for meta in &entries {
             // TODO: what happens when this errors out? Do we truncate the log...?
             self.file_set
