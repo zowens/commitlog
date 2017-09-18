@@ -8,9 +8,9 @@ use std::cmp::Ordering;
 use super::Offset;
 
 /// Number of byes in each entry pair
-pub static INDEX_ENTRY_BYTES: usize = 8;
+pub const INDEX_ENTRY_BYTES: usize = 8;
 /// Number of bytes contained in the base name of the file.
-pub static INDEX_FILE_NAME_LEN: usize = 20;
+pub const INDEX_FILE_NAME_LEN: usize = 20;
 /// File extension for the index file.
 pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
 
@@ -99,6 +99,28 @@ pub enum AccessMode {
     Read,
     /// This is the active index and can be read or written to.
     ReadWrite,
+}
+
+/// Buffer used to amortize writes to the index.
+pub struct IndexBuf(Vec<u8>, u64);
+
+impl IndexBuf {
+    pub fn new(len: usize, starting_offset: u64) -> IndexBuf {
+        IndexBuf(Vec::with_capacity(len * INDEX_ENTRY_BYTES), starting_offset)
+    }
+
+    pub fn push(&mut self, abs_offset: u64, position: u32) {
+        // TODO: assert that the offset is > previous
+        assert!(
+            abs_offset >= self.1,
+            "Attempt to append to an offset before base offset in index"
+        );
+
+        let mut tmp_buf = [0u8; INDEX_ENTRY_BYTES];
+        LittleEndian::write_u32(&mut tmp_buf[0..4], (abs_offset - self.1) as u32);
+        LittleEndian::write_u32(&mut tmp_buf[4..], position);
+        self.0.extend_from_slice(&tmp_buf);
+    }
 }
 
 impl Index {
@@ -236,12 +258,14 @@ impl Index {
         Ok(())
     }
 
-    pub fn append(&mut self, abs_offset: u64, position: u32) -> io::Result<()> {
-        trace!("Index append {} => {}", abs_offset, position);
+    pub fn append(&mut self, offsets: IndexBuf) -> io::Result<()> {
+        // TODO: trace
+        //trace!("Index append: {:?}", abs_offset, position);
 
-        assert!(
-            abs_offset >= self.base_offset,
-            "Attempt to append to an offset before base offset in index"
+        assert_eq!(
+            self.base_offset,
+            offsets.1,
+            "Buffer starting offset does not match the index starting offset"
         );
         assert_eq!(
             self.mode,
@@ -250,19 +274,18 @@ impl Index {
         );
 
         // check if we need to resize
-        if self.size() < (self.next_write_pos + INDEX_ENTRY_BYTES) {
+        if self.size() < (self.next_write_pos + offsets.0.len()) {
             self.resize()?;
         }
 
         unsafe {
             let mem_slice: &mut [u8] = self.mmap.as_mut_slice();
-            let offset = (abs_offset - self.base_offset) as u32;
-            let buf_pos = self.next_write_pos;
+            let start = self.next_write_pos;
+            let end = start + offsets.0.len();
 
-            LittleEndian::write_u32(&mut mem_slice[buf_pos..buf_pos + 4], offset);
-            LittleEndian::write_u32(&mut mem_slice[buf_pos + 4..buf_pos + 8], position);
+            &mut mem_slice[start..end].copy_from_slice(&offsets.0);
 
-            self.next_write_pos += 8;
+            self.next_write_pos = end;
             Ok(())
         }
     }
@@ -520,8 +543,11 @@ mod tests {
         let mut index = Index::new(&path, 9u64, 1000usize).unwrap();
 
         assert_eq!(1000, index.size());
-        index.append(11u64, 0xffff).unwrap();
-        index.append(12u64, 0xeeee).unwrap();
+
+        let mut buf = IndexBuf::new(2, 9u64);
+        buf.push(11u64, 0xffff);
+        buf.push(12u64, 0xeeee);
+        index.append(buf).unwrap();
         index.flush_sync().unwrap();
 
         let e0 = index.read_entry(0).unwrap();
@@ -542,8 +568,11 @@ mod tests {
         let path = TestDir::new();
         let mut index = Index::new(&path, 10u64, 1000usize).unwrap();
 
-        index.append(11u64, 0xffff).unwrap();
-        index.append(12u64, 0xeeee).unwrap();
+        let mut buf = IndexBuf::new(2, 10u64);
+        buf.push(11u64, 0xffff);
+        buf.push(12u64, 0xeeee);
+        index.append(buf).unwrap();
+        index.flush_sync().unwrap();
 
         // set_readonly it
         index.set_readonly().expect("Unable to set readonly");
@@ -565,11 +594,23 @@ mod tests {
         // issue some writes
         {
             let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-            index.append(10, 0).unwrap();
-            index.append(11, 10).unwrap();
-            index.append(12, 20).unwrap();
-            index.append(13, 30).unwrap();
-            index.append(14, 40).unwrap();
+
+            {
+                let mut buf = IndexBuf::new(3, 10u64);
+                buf.push(10, 0);
+                buf.push(11, 10);
+                buf.push(12, 20);
+                index.append(buf).unwrap();
+            }
+
+            {
+                let mut buf = IndexBuf::new(2, 10u64);
+                buf.push(13, 30);
+                buf.push(14, 40);
+                index.append(buf).unwrap();
+            }
+
+            index.flush_sync().unwrap();
             index.set_readonly().unwrap();
         }
 
@@ -597,14 +638,16 @@ mod tests {
     pub fn find() {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-        index.append(10, 1).unwrap();
-        index.append(11, 2).unwrap();
-        index.append(12, 3).unwrap();
-        index.append(15, 4).unwrap();
-        index.append(16, 5).unwrap();
-        index.append(17, 6).unwrap();
-        index.append(18, 7).unwrap();
-        index.append(20, 8).unwrap();
+        let mut buf = IndexBuf::new(8, 10u64);
+        buf.push(10, 1);
+        buf.push(11, 2);
+        buf.push(12, 3);
+        buf.push(15, 4);
+        buf.push(16, 5);
+        buf.push(17, 6);
+        buf.push(18, 7);
+        buf.push(20, 8);
+        index.append(buf).unwrap();
 
         let res = index.find(16).unwrap();
         assert_eq!(16, res.0);
@@ -617,14 +660,16 @@ mod tests {
 
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-        index.append(10, 1).unwrap();
-        index.append(11, 2).unwrap();
-        index.append(12, 3).unwrap();
-        index.append(13, 4).unwrap();
-        index.append(14, 5).unwrap();
-        index.append(15, 6).unwrap();
-        index.append(16, 7).unwrap();
-        index.append(17, 8).unwrap();
+        let mut buf = IndexBuf::new(8, 10u64);
+        buf.push(10, 1);
+        buf.push(11, 2);
+        buf.push(12, 3);
+        buf.push(13, 4);
+        buf.push(14, 5);
+        buf.push(15, 6);
+        buf.push(16, 7);
+        buf.push(17, 8);
+        index.append(buf).unwrap();
 
         let res = index.find(16).unwrap();
         assert_eq!(16, res.0);
@@ -635,14 +680,16 @@ mod tests {
     pub fn find_nonexistant_value_finds_next() {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-        index.append(10, 1).unwrap();
-        index.append(11, 2).unwrap();
-        index.append(12, 3).unwrap();
-        index.append(15, 4).unwrap();
-        index.append(16, 5).unwrap();
-        index.append(17, 6).unwrap();
-        index.append(18, 7).unwrap();
-        index.append(20, 8).unwrap();
+        let mut buf = IndexBuf::new(8, 10u64);
+        buf.push(10, 1);
+        buf.push(11, 2);
+        buf.push(12, 3);
+        buf.push(15, 4);
+        buf.push(16, 5);
+        buf.push(17, 6);
+        buf.push(18, 7);
+        buf.push(20, 8);
+        index.append(buf).unwrap();
 
         let res = index.find(14).unwrap();
         assert_eq!(15, res.0);
@@ -653,14 +700,16 @@ mod tests {
     pub fn find_nonexistant_value_greater_than_max() {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-        index.append(10, 1).unwrap();
-        index.append(11, 2).unwrap();
-        index.append(12, 3).unwrap();
-        index.append(15, 4).unwrap();
-        index.append(16, 5).unwrap();
-        index.append(17, 6).unwrap();
-        index.append(18, 7).unwrap();
-        index.append(20, 8).unwrap();
+        let mut buf = IndexBuf::new(8, 10u64);
+        buf.push(10, 1);
+        buf.push(11, 2);
+        buf.push(12, 3);
+        buf.push(15, 4);
+        buf.push(16, 5);
+        buf.push(17, 6);
+        buf.push(18, 7);
+        buf.push(20, 8);
+        index.append(buf).unwrap();
 
         let res = index.find(21);
         assert!(res.is_none());
@@ -670,14 +719,16 @@ mod tests {
     pub fn find_out_of_bounds() {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-        index.append(10, 1).unwrap();
-        index.append(11, 2).unwrap();
-        index.append(12, 3).unwrap();
-        index.append(15, 4).unwrap();
-        index.append(16, 5).unwrap();
-        index.append(17, 6).unwrap();
-        index.append(18, 7).unwrap();
-        index.append(20, 8).unwrap();
+        let mut buf = IndexBuf::new(8, 10u64);
+        buf.push(10, 1);
+        buf.push(11, 2);
+        buf.push(12, 3);
+        buf.push(15, 4);
+        buf.push(16, 5);
+        buf.push(17, 6);
+        buf.push(18, 7);
+        buf.push(20, 8);
+        index.append(buf).unwrap();
 
         let res = index.find(2);
         assert!(res.is_none());
@@ -689,8 +740,10 @@ mod tests {
         let dir = TestDir::new();
         {
             let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
-            index.append(10, 1).unwrap();
-            index.append(11, 2).unwrap();
+            let mut buf = IndexBuf::new(8, 10u64);
+            buf.push(10, 1);
+            buf.push(11, 2);
+            index.append(buf).unwrap();
             index.flush_sync().unwrap();
         }
 
@@ -724,8 +777,10 @@ mod tests {
         let dir = TestDir::new();
         {
             let mut index = Index::new(&dir, 10u64, 16usize).unwrap();
-            index.append(10, 1).unwrap();
-            index.append(11, 2).unwrap();
+            let mut buf = IndexBuf::new(2, 10u64);
+            buf.push(10, 1);
+            buf.push(11, 2);
+            index.append(buf).unwrap();
             index.flush_sync().unwrap();
         }
 
@@ -759,11 +814,13 @@ mod tests {
         // INSERTION POINT
         //  => 5 messages, each 10 bytes
         // -----
-        index.append(10, 10).unwrap();
-        index.append(11, 20).unwrap();
-        index.append(12, 30).unwrap();
-        index.append(13, 40).unwrap();
-        index.append(14, 50).unwrap();
+        let mut buf = IndexBuf::new(5, 10u64);
+        buf.push(10, 10);
+        buf.push(11, 20);
+        buf.push(12, 30);
+        buf.push(13, 40);
+        buf.push(14, 50);
+        index.append(buf).unwrap();
 
         // test offset not in index
         let res = index.find_segment_range(9, 50, 60);
@@ -810,13 +867,17 @@ mod tests {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 32usize).unwrap();
         assert_eq!(32, index.size());
-        index.append(10, 10).unwrap();
-        index.append(11, 20).unwrap();
-        index.append(12, 30).unwrap();
-        index.append(13, 40).unwrap();
+        let mut buf = IndexBuf::new(4, 10u64);
+        buf.push(10, 10);
+        buf.push(11, 20);
+        buf.push(12, 30);
+        buf.push(13, 40);
+        index.append(buf).unwrap();
         assert_eq!(32, index.size());
 
-        assert!(index.append(14, 50).is_ok());
+        let mut buf = IndexBuf::new(1, 10u64);
+        buf.push(14, 50);
+        assert!(index.append(buf).is_ok());
 
         // make sure the index was resized
         assert_eq!(48, index.size());
@@ -857,11 +918,13 @@ mod tests {
         env_logger::init().unwrap_or(());
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 128usize).unwrap();
-        index.append(10, 10).unwrap();
-        index.append(11, 20).unwrap();
-        index.append(12, 30).unwrap();
-        index.append(13, 40).unwrap();
-        index.append(14, 50).unwrap();
+        let mut buf = IndexBuf::new(5, 10u64);
+        buf.push(10, 10);
+        buf.push(11, 20);
+        buf.push(12, 30);
+        buf.push(13, 40);
+        buf.push(14, 50);
+        index.append(buf).unwrap();
 
         let file_len = index.truncate(12);
         assert_eq!(Some(40), file_len);
@@ -880,11 +943,13 @@ mod tests {
         env_logger::init().unwrap_or(());
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 128usize).unwrap();
-        index.append(10, 10).unwrap();
-        index.append(11, 20).unwrap();
-        index.append(12, 30).unwrap();
-        index.append(13, 40).unwrap();
-        index.append(14, 50).unwrap();
+        let mut buf = IndexBuf::new(5, 10u64);
+        buf.push(10, 10);
+        buf.push(11, 20);
+        buf.push(12, 30);
+        buf.push(13, 40);
+        buf.push(14, 50);
+        index.append(buf).unwrap();
 
         let file_len = index.truncate(14);
         assert_eq!(None, file_len);
@@ -896,9 +961,16 @@ mod tests {
     fn bench_find_exact(b: &mut Bencher) {
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 9000usize).unwrap();
-        for i in 10u32..1010 {
-            index.append(i as u64, i).unwrap();
+
+        for i in 0..10 {
+            let mut buf = IndexBuf::new(20, 10u64);
+            for j in 0..200 {
+                let off = 10u32 + (i * j);
+                buf.push(off as u64, off);
+            }
+            index.append(buf).unwrap();
         }
+
         index.flush_sync().unwrap();
         b.iter(|| { index.find(943).unwrap(); })
     }

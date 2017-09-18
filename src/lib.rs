@@ -406,12 +406,14 @@ impl CommitLog {
         })?;
 
         // write to the index
-        // TODO: amortize the cost of adding to the index
-        for meta in &entries {
+        {
+            let index = self.file_set.active_index_mut();
+            let mut index_pos_buf = IndexBuf::new(entries.len(), index.starting_offset());
+            for meta in &entries {
+                index_pos_buf.push(meta.offset, meta.file_pos);
+            }
             // TODO: what happens when this errors out? Do we truncate the log...?
-            self.file_set
-                .active_index_mut()
-                .append(meta.offset, meta.file_pos)?;
+            index.append(index_pos_buf)?;
         }
 
         // TODO: fix this with Option?
