@@ -1,12 +1,12 @@
 [package]
 authors = ["Zack Owens <zowens2009@gmail.com>"]
-name = "commitlog"
-version = "0.0.9"
 description = "Implementation of an append-only commit log backed by disk."
-repository = "https://github.com/zowens/commitlog"
 homepage = "https://github.com/zowens/commitlog"
-readme = "README.md"
 license = "MIT"
+name = "commitlog"
+readme = "README.md"
+repository = "https://github.com/zowens/commitlog"
+version = "0.0.9"
 
 [dependencies]
 byteorder = "1.0"

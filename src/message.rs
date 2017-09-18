@@ -1,9 +1,10 @@
 use std::iter::{FromIterator, IntoIterator};
 use std::io::{self, Read};
 use std::convert::AsMut;
+use std::u16;
 use byteorder::{ByteOrder, LittleEndian};
 use super::Offset;
-use crc32c::crc32c;
+use crc32c::{crc32c, crc32c_append};
 
 #[derive(Debug)]
 pub enum MessageError {
@@ -41,44 +42,48 @@ macro_rules! read_n {
 
 const HEADER_SIZE: usize = 20;
 
-macro_rules! hdr {
+macro_rules! read_header {
     (offset, $buf:expr) => (
         LittleEndian::read_u64(&$buf[0..8])
-    );
-    (offset, $buf:expr, $v:expr) => (
-        LittleEndian::write_u64(&mut $buf[0..8], $v)
     );
     (size, $buf:expr) => (
         LittleEndian::read_u32(&$buf[8..12])
     );
-    (size, $buf:expr, $v:expr) => (
-        LittleEndian::write_u32(&mut $buf[8..12], $v)
-    );
     (hash, $buf:expr) => (
         LittleEndian::read_u32(&$buf[12..16])
+    );
+    (meta_size, $buf:expr) => (
+        LittleEndian::read_u16(&$buf[18..20])
+    );
+}
+
+macro_rules! set_header {
+    (offset, $buf:expr, $v:expr) => (
+        LittleEndian::write_u64(&mut $buf[0..8], $v)
+    );
+    (size, $buf:expr, $v:expr) => (
+        LittleEndian::write_u32(&mut $buf[8..12], $v)
     );
     (hash, $buf:expr, $v:expr) => (
         LittleEndian::write_u32(&mut $buf[12..16], $v)
     );
+    (meta_size, $buf:expr, $v:expr) => (
+        LittleEndian::write_u16(&mut $buf[18..20], $v)
+    );
 }
-
-macro_rules! payload {
-    ($e:expr) => (
-        &$e[HEADER_SIZE..]
-    )
-}
-
 
 /// Messages contain finite-sized binary values with an offset from
 /// the beginning of the log.
 ///
-/// | Bytes     | Encoding          | Value            |
-/// | --------- | ----------------- | ---------------- |
-/// | 0-7       | Little Endian u64 | Offset           |
-/// | 8-11      | Little Endian u32 | Payload Size     |
-/// | 12-15     | Little Endian u32 | CRC32 of payload |
-/// | 16-19     |                   | Reserved         |
-/// | 20+       |                   | Payload          |
+/// | Bytes       | Encoding          | Value                          |
+/// | ---------   | ----------------- | ------------------------------ |
+/// | 0-7         | Little Endian u64 | Offset                         |
+/// | 8-11        | Little Endian u32 | Payload and Metadata Size      |
+/// | 12-15       | Little Endian u32 | CRC32C of payload and metadata |
+/// | 16-17       |                   | Reserved                       |
+/// | m: 18-19    | Little Endian u16 | Size of metadata               |
+/// | 20-(20+m-1) |                   | Metadata                       |
+/// | (20+m)      |                   | Payload                        |
 #[derive(Debug)]
 pub struct Message<'a> {
     bytes: &'a [u8],
@@ -88,45 +93,69 @@ impl<'a> Message<'a> {
     /// crc32c of the payload.
     #[inline]
     pub fn hash(&self) -> u32 {
-        hdr!(hash, self.bytes)
+        read_header!(hash, self.bytes)
     }
 
     /// Size of the payload.
     #[inline]
     pub fn size(&self) -> u32 {
-        hdr!(size, self.bytes)
+        read_header!(size, self.bytes)
     }
 
     /// Offset of the message in the log.
     #[inline]
     pub fn offset(&self) -> Offset {
-        hdr!(offset, self.bytes)
+        read_header!(offset, self.bytes)
     }
 
     /// Payload of the message.
     #[inline]
     pub fn payload(&self) -> &[u8] {
-        payload!(self.bytes)
+        &self.bytes[(HEADER_SIZE + self.metadata_size() as usize)..]
+    }
+
+    #[inline]
+    pub fn metadata_size(&self) -> u16 {
+        read_header!(meta_size, self.bytes)
+    }
+
+    #[inline]
+    pub fn metadata(&self) -> &[u8] {
+        &self.bytes[HEADER_SIZE..(HEADER_SIZE + self.metadata_size() as usize)]
     }
 
     /// Check that the hash matches the hash of the payload.
     #[inline]
     pub fn verify_hash(&self) -> bool {
-        self.hash() == crc32c(self.payload())
+        self.hash() == crc32c(&self.bytes[HEADER_SIZE..])
     }
 
 
     /// Serializes a new message into a buffer
-    pub fn serialize<B: AsRef<[u8]>>(bytes: &mut Vec<u8>, offset: u64, payload: B) {
+    pub fn serialize<M: AsRef<[u8]>, B: AsRef<[u8]>>(
+        bytes: &mut Vec<u8>,
+        offset: u64,
+        meta: M,
+        payload: B,
+    ) {
         let payload_slice = payload.as_ref();
+        let meta_slice = meta.as_ref();
+        assert!(
+            meta_slice.len() < (u16::MAX) as usize,
+            "Metadata cannot exceed 2^16 in length"
+        );
 
         let mut buf = [0; HEADER_SIZE];
-        hdr!(offset, buf, offset);
-        hdr!(size, buf, payload_slice.len() as u32);
-        hdr!(hash, buf, crc32c(payload_slice));
+        set_header!(offset, buf, offset);
+        set_header!(size, buf, (meta_slice.len() + payload_slice.len()) as u32);
+        set_header!(hash, buf, crc32c_append(crc32c(meta_slice), payload_slice));
+        set_header!(meta_size, buf, meta_slice.len() as u16);
 
         // add the header
         bytes.extend_from_slice(&buf);
+
+        // metadata
+        bytes.extend_from_slice(meta_slice);
 
         // payload
         bytes.extend_from_slice(payload_slice);
@@ -146,7 +175,7 @@ impl<'a> Iterator for MessageIter<'a> {
             return None;
         }
 
-        let size = hdr!(size, self.bytes) as usize;
+        let size = read_header!(size, self.bytes) as usize;
 
         trace!("message iterator: size {} bytes", size);
         assert!(self.bytes.len() >= HEADER_SIZE + size);
@@ -269,8 +298,8 @@ impl MessageBuf {
                     return Err(MessageError::InvalidPayloadLength);
                 }
 
-                let size = hdr!(size, bytes) as usize;
-                let hash = hdr!(hash, bytes);
+                let size = read_header!(size, bytes) as usize;
+                let hash = read_header!(hash, bytes);
 
                 let next_msg_offset = HEADER_SIZE + size;
                 if bytes.len() < next_msg_offset {
@@ -316,7 +345,17 @@ impl MessageBuf {
     /// Adds a new message to the buffer.
     pub fn push<B: AsRef<[u8]>>(&mut self, payload: B) {
         // blank offset, expect the log to set the offsets
-        Message::serialize(&mut self.bytes, 0u64, payload);
+        // empty metadata
+        let meta = [0u8; 0];
+        Message::serialize(&mut self.bytes, 0u64, &meta, payload);
+        self.len += 1;
+    }
+
+    /// Adds a new message with metadata.
+    pub fn push_with_metadata<M: AsRef<[u8]>, B: AsRef<[u8]>>(&mut self, metadata: M, payload: B) {
+        // blank offset, expect the log to set the offsets
+        // empty metadata
+        Message::serialize(&mut self.bytes, 0u64, metadata, payload);
         self.len += 1;
     }
 
@@ -325,8 +364,8 @@ impl MessageBuf {
         let mut buf = [0; HEADER_SIZE];
         read_n!(reader, buf, HEADER_SIZE, "Unable to read header");
 
-        let size = hdr!(size, buf) as usize;
-        let hash = hdr!(hash, buf);
+        let size = read_header!(size, buf) as usize;
+        let hash = read_header!(hash, buf);
 
         let mut bytes = vec![0; size];
         read_n!(reader, bytes, size);
@@ -370,10 +409,10 @@ pub fn set_offsets<S: MessageSetMut>(
 
         // write the absolute offset into the byte buffer
         let msg_start_buf = &mut bytes[rel_pos..];
-        hdr!(offset, msg_start_buf, abs_off);
+        set_header!(offset, msg_start_buf, abs_off);
 
         // bump the relative position of the message
-        let payload_size = hdr!(size, msg_start_buf);
+        let payload_size = read_header!(size, msg_start_buf);
         rel_pos += HEADER_SIZE + payload_size as usize;
         rel_off += 1;
     }
@@ -430,7 +469,7 @@ mod tests {
     #[test]
     fn message_read() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"123456789");
+        Message::serialize(&mut buf, 120, b"", b"123456789");
         let mut buf_reader = io::BufReader::new(buf.as_slice());
 
         let mut reader = MessageBuf::default();
@@ -443,11 +482,29 @@ mod tests {
         assert_eq!(read_msg.offset(), 120);
     }
 
+    #[test]
+    fn message_construction_with_metadata() {
+        let mut buf = Vec::new();
+        Message::serialize(&mut buf, 120, b"123", b"456789");
+        let res = MessageBuf::from_bytes(buf).unwrap();
+        let msg = res.iter().next().unwrap();
+        assert_eq!(b"123", msg.metadata());
+        assert_eq!(b"456789", msg.payload());
+    }
+
+    #[test]
+    fn message_buf_push_with_meta() {
+        let mut buf = MessageBuf::default();
+        buf.push_with_metadata(b"123", b"456789");
+        let msg = buf.iter().next().unwrap();
+        assert_eq!(b"123", msg.metadata());
+        assert_eq!(b"456789", msg.payload());
+    }
 
     #[test]
     fn message_read_invalid_hash() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"123456789");
+        Message::serialize(&mut buf, 120, b"", b"123456789");
         // mess with the payload such that the hash does not match
         let last_ind = buf.len() - 1;
         buf[last_ind] ^= buf[last_ind] + 1;
@@ -470,7 +527,7 @@ mod tests {
     #[test]
     fn message_read_invalid_payload_length() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"123456789");
+        Message::serialize(&mut buf, 120, b"", b"123456789");
         // pop the last byte
         buf.pop();
 
