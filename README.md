@@ -4,6 +4,8 @@ Commit log library for rust. It is intended to be used in various higher-level d
 of a distributed log.
 
 [![Crates.io](https://img.shields.io/crates/v/commitlog.svg?maxAge=2592000)](https://crates.io/crates/commitlog)
+[![Docs.rs](https://docs.rs/commitlog/badge.svg)](https://docs.rs/commitlog/)
+[![Travis](https://travis-ci.org/zowens/commitlog.svg?branch=master)](https://travis-ci.org/zowens/commitlog/)
 
 [Documentation](https://docs.rs/commitlog/)
 
