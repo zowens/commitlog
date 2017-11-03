@@ -312,6 +312,7 @@ impl LogOptions {
     /// Creates minimal log options value with a directory containing the log.
     ///
     /// The default values are:
+    ///
     /// - *segment_max_bytes*: 1GB
     /// - *index_max_entries*: 100,000
     /// - *message_max_bytes*: 1mb
@@ -965,5 +966,14 @@ mod tests {
         // push in an empty message
         buf.push(b"");
         assert_eq!(buf.bytes().len(), 20);
+    }
+
+    #[test]
+    pub fn message_limit_0_works() {
+        let mut opts = LogOptions::new("log");
+        opts.message_max_bytes(0);
+        let mut log = CommitLog::new(opts).unwrap();
+        assert!(log.append_msg([].as_ref()).is_ok());
+        assert!(log.append_msg([1u8].as_ref()).is_err());
     }
 }
