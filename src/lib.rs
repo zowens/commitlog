@@ -81,9 +81,6 @@ use message::MessageError;
 use file_set::FileSet;
 use reader::{LogSliceReader, MessageBufReader};
 
-/// Internal msg header len
-const MSG_HEADER_LEN: usize = 20;
-
 /// Offset of an appended log segment.
 pub type Offset = u64;
 
@@ -308,7 +305,7 @@ pub struct LogOptions {
     log_dir: PathBuf,
     log_max_bytes: usize,
     index_max_bytes: usize,
-    message_max_bytes: usize,
+    message_max_bytes: u32,
 }
 
 impl LogOptions {
@@ -347,19 +344,9 @@ impl LogOptions {
 
     /// Bounds the size of a message to a number of bytes.
     ///
-    /// The maximum message size is encoding dependent, i.e. usize minus the length of the internal commitlog
-    /// header. If the given size is too large `CommitLog::new()` will fail.
-    ///
-    /// ```
-    /// # use commitlog::*;
-    /// # use std::usize;
-    /// let mut opts = LogOptions::new("log");
-    /// opts.message_max_bytes(usize::MAX);
-    /// assert!(CommitLog::new(opts).is_err());
-    /// ```
-    ///
+    /// Attempting to append a larger message will fail.
     #[inline]
-    pub fn message_max_bytes(&mut self, bytes: usize) -> &mut LogOptions {
+    pub fn message_max_bytes(&mut self, bytes: u32) -> &mut LogOptions {
         self.message_max_bytes = bytes;
         self
     }
@@ -373,10 +360,6 @@ pub struct CommitLog {
 impl CommitLog {
     /// Creates or opens an existing commit log.
     pub fn new(opts: LogOptions) -> io::Result<CommitLog> {
-        if usize::MAX - opts.message_max_bytes < MSG_HEADER_LEN {
-            return Err(io::Error::new(io::ErrorKind::Other, "Maximum message size is too large"))
-        }
-
         fs::create_dir_all(&opts.log_dir).unwrap_or(());
 
         info!("Opening log in directory {:?}", &opts.log_dir.to_str());
@@ -407,6 +390,21 @@ impl CommitLog {
     }
 
     /// Appends log entrites to the commit log, returning the offsets appended.
+    ///
+    /// `message_max_bytes` is enforced for each message. If one message exceeds this
+    /// limit, the entire set is not appended.
+    ///
+    /// ```
+    /// # use commitlog::*;
+    /// # use commitlog::message::MessageBuf;
+    /// let mut opts = LogOptions::new("log");
+    /// opts.message_max_bytes(100);
+    /// let mut log = CommitLog::new(opts).unwrap();
+    /// let mut messages = MessageBuf::default();
+    /// messages.push(vec![1u8; 100]);
+    /// messages.push(vec![1u8; 101]);
+    /// assert!(log.append(&mut messages).is_err());
+    /// ```
     pub fn append<T>(&mut self, buf: &mut T) -> Result<OffsetRange, AppendError>
     where
         T: MessageSetMut,
@@ -962,29 +960,10 @@ mod tests {
     }
 
     #[test]
-    pub fn message_header_len_is_correct() {
+    pub fn message_header_len_is_20() {
         let mut buf = MessageBuf::default();
         // push in an empty message
         buf.push(b"");
-        assert_eq!(buf.bytes().len(), MSG_HEADER_LEN);
-    }
-
-    #[test]
-    pub fn large_message_sizes_cause_error_on_new() {
-        let mut opts = LogOptions::new("log");
-        opts.message_max_bytes(usize::MAX - MSG_HEADER_LEN + 1);
-        match CommitLog::new(opts) {
-            Ok(_) => panic!("Log creation should have failed due to invalid max size"),
-            Err(err) => {
-                assert_eq!(err.description(), "Maximum message size is too large");
-            }
-        }
-    }
-
-    #[test]
-    pub fn max_size_is_usize_minus_headerlen() {
-        let mut opts = LogOptions::new("log");
-        opts.message_max_bytes(usize::MAX - MSG_HEADER_LEN);
-        CommitLog::new(opts).unwrap();
+        assert_eq!(buf.bytes().len(), 20);
     }
 }
