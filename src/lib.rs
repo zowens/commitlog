@@ -386,15 +386,6 @@ impl CommitLog {
     }
 
     /// Appends a single message to the log, returning the offset appended.
-    pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
-        let mut buf = MessageBuf::default();
-        buf.push(payload);
-        let res = self.append(&mut buf)?;
-        assert_eq!(res.len(), 1);
-        Ok(res.first())
-    }
-
-    /// Appends log entrites to the commit log, returning the offsets appended.
     ///
     /// If the message size exceeds the limit set in the options an error is
     /// returned.
@@ -407,13 +398,24 @@ impl CommitLog {
     /// assert!(log.append_msg([1u8; 100].as_ref()).is_ok());
     /// assert!(log.append_msg([1u8; 101].as_ref()).is_err());
     /// ```
+    pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
+        let mut buf = MessageBuf::default();
+        buf.push(payload);
+        let res = self.append(&mut buf)?;
+        assert_eq!(res.len(), 1);
+        Ok(res.first())
+    }
+
+    /// Appends log entrites to the commit log, returning the offsets appended.
     pub fn append<T>(&mut self, buf: &mut T) -> Result<OffsetRange, AppendError>
     where
         T: MessageSetMut,
     {
-        // Check if given message exceeded the max size
-        if buf.bytes().len() > (self.file_set.log_options().message_max_bytes + MSG_HEADER_LEN) {
-            return Err(AppendError::MessageSizeExceeded);
+        for msg in buf.iter() {
+            // Check if given message exceeded the max size
+            if msg.size() > (self.file_set.log_options().message_max_bytes as u32) {
+                return Err(AppendError::MessageSizeExceeded);
+            }
         }
 
         // first write to the current segment
