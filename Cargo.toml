@@ -10,7 +10,7 @@ version = "0.0.9"
 
 [dependencies]
 byteorder = "1.0"
-crc32c = "0.1"
+crc32c = "0.2"
 log = "0.3.6"
 memmap = "0.5"
 
