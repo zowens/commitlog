@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder, LittleEndian};
-use memmap::{Mmap, MmapViewSync, Protection};
+use memmap::{MmapMut};
 use std::path::{Path, PathBuf};
 use std::io::{self, Write};
 use std::fs::{self, File, OpenOptions};
@@ -84,7 +84,7 @@ impl MessageSetRange {
 pub struct Index {
     file: File,
     path: PathBuf,
-    mmap: MmapViewSync,
+    mmap: MmapMut,
     mode: AccessMode,
 
     /// next starting byte in index file offset to write
@@ -153,7 +153,7 @@ impl Index {
             index_file.set_len(file_bytes as u64)?;
         }
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
+        let mmap = unsafe { MmapMut::map_mut(&index_file)? };
 
         Ok(Index {
             file: index_file,
@@ -187,10 +187,10 @@ impl Index {
             }
         };
 
-        let mmap = Mmap::open(&index_file, Protection::ReadWrite)?.into_view_sync();
+        let mmap = unsafe { MmapMut::map_mut(&index_file)? };
 
-        let next_write_pos = unsafe {
-            let index = mmap.as_slice();
+        let next_write_pos = {
+            let index = &mmap[..];
             assert_eq!(index.len() % INDEX_ENTRY_BYTES, 0);
 
             // check if this is a full or partial index
@@ -252,9 +252,9 @@ impl Index {
         };
 
         // unmap the file (Set to dummy anonymous map)
-        self.mmap = Mmap::anonymous(32, Protection::ReadWrite)?.into_view_sync();
+        self.mmap = MmapMut::map_anon(32)?;
         self.file.set_len(new_len as u64)?;
-        self.mmap = Mmap::open(&self.file, Protection::ReadWrite)?.into_view_sync();
+        self.mmap = unsafe { MmapMut::map_mut(&self.file)? };
         Ok(())
     }
 
@@ -278,16 +278,14 @@ impl Index {
             self.resize()?;
         }
 
-        unsafe {
-            let mem_slice: &mut [u8] = self.mmap.as_mut_slice();
-            let start = self.next_write_pos;
-            let end = start + offsets.0.len();
+        let mem_slice: &mut [u8] = &mut self.mmap[..];
+        let start = self.next_write_pos;
+        let end = start + offsets.0.len();
 
-            &mut mem_slice[start..end].copy_from_slice(&offsets.0);
+        &mut mem_slice[start..end].copy_from_slice(&offsets.0);
 
-            self.next_write_pos = end;
-            Ok(())
-        }
+        self.next_write_pos = end;
+        Ok(())
     }
 
     pub fn set_readonly(&mut self) -> io::Result<()> {
@@ -296,7 +294,8 @@ impl Index {
 
             // trim un-used entries by reducing mmap view and truncating file
             if self.next_write_pos < self.mmap.len() {
-                self.mmap.restrict(0, self.next_write_pos)?;
+                // TODO: fix restrict
+                // self.mmap.restrict(0, self.next_write_pos)?;
                 if let Err(e) = self.file.set_len(self.next_write_pos as u64) {
                     warn!(
                         "Unable to truncate index file {:020}.{} to proper length: {:?}",
@@ -338,7 +337,7 @@ impl Index {
         };
 
 
-        let mem = unsafe { self.mmap.as_mut_slice() };
+        let mem = &mut self.mmap[..];
 
         let (off, file_len) = entry!(mem, next_pos);
 
@@ -389,16 +388,14 @@ impl Index {
             return None;
         }
 
-        unsafe {
-            let mem_slice = self.mmap.as_slice();
-            let start = i * INDEX_ENTRY_BYTES;
-            let offset = LittleEndian::read_u32(&mem_slice[start..start + 4]);
-            if offset == 0 && i > 0 {
-                None
-            } else {
-                let pos = LittleEndian::read_u32(&mem_slice[start + 4..start + 8]);
-                Some((offset as u64 + self.base_offset, pos))
-            }
+        let mem_slice = &self.mmap[..];
+        let start = i * INDEX_ENTRY_BYTES;
+        let offset = LittleEndian::read_u32(&mem_slice[start..start + 4]);
+        if offset == 0 && i > 0 {
+            None
+        } else {
+            let pos = LittleEndian::read_u32(&mem_slice[start + 4..start + 8]);
+            Some((offset as u64 + self.base_offset, pos))
         }
     }
 
@@ -412,7 +409,7 @@ impl Index {
     #[allow(dead_code)]
     pub fn find(&self, offset: Offset) -> Option<(Offset, u32)> {
         self.find_index_pos(offset).and_then(|p| {
-            let mem_slice = unsafe { self.mmap.as_slice() };
+            let mem_slice = &self.mmap[..];
             let (rel_off, file_pos) = entry!(mem_slice, p);
             let abs_off = rel_off as u64 + self.base_offset;
             if abs_off < offset {
@@ -439,7 +436,7 @@ impl Index {
             _ => return Err(RangeFindError::OffsetNotAppended),
         };
 
-        let mem_slice = unsafe { self.mmap.as_slice() };
+        let mem_slice = &self.mmap[..];
         let (_, start_file_pos) = entry!(mem_slice, start_ind_pos);
 
         // try to get until the end of the segment
@@ -494,7 +491,7 @@ impl Index {
 
         let rel_offset = (offset - self.base_offset) as u32;
 
-        let mem_slice = unsafe { self.mmap.as_slice() };
+        let mem_slice = &self.mmap[..];
         trace!("offset={} Next write pos = {}", offset, self.next_write_pos);
 
         // attempt to find the offset assuming no truncation
@@ -656,7 +653,7 @@ mod tests {
 
     #[test]
     pub fn find_exact() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
 
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
@@ -736,7 +733,7 @@ mod tests {
 
     #[test]
     pub fn reopen_partial_index() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         {
             let mut index = Index::new(&dir, 10u64, 1000usize).unwrap();
@@ -773,7 +770,7 @@ mod tests {
 
     #[test]
     pub fn reopen_full_index() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         {
             let mut index = Index::new(&dir, 10u64, 16usize).unwrap();
@@ -807,7 +804,7 @@ mod tests {
 
     #[test]
     fn find_segment_range_offset() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 40usize).unwrap();
         // -----
@@ -863,7 +860,7 @@ mod tests {
 
     #[test]
     fn index_resize() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 32usize).unwrap();
         assert_eq!(32, index.size());
@@ -887,7 +884,7 @@ mod tests {
 
     #[test]
     fn index_remove() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         let index = Index::new(&dir, 0u64, 32usize).unwrap();
 
@@ -915,7 +912,7 @@ mod tests {
 
     #[test]
     fn index_truncate() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 128usize).unwrap();
         let mut buf = IndexBuf::new(5, 10u64);
@@ -932,7 +929,7 @@ mod tests {
         assert_eq!(3 * INDEX_ENTRY_BYTES, index.next_write_pos);
 
         // ensure we've zeroed the entries
-        let mem = unsafe { index.mmap.as_slice() };
+        let mem = &index.mmap[..];
         for i in (3 * INDEX_ENTRY_BYTES)..(5 * INDEX_ENTRY_BYTES) {
             assert_eq!(0, mem[i], "Expected 0 at index {}", i);
         }
@@ -940,7 +937,7 @@ mod tests {
 
     #[test]
     fn index_truncate_at_boundary() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
         let mut index = Index::new(&dir, 10u64, 128usize).unwrap();
         let mut buf = IndexBuf::new(5, 10u64);

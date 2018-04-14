@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn message_construction() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let mut msg_buf = MessageBuf::default();
         msg_buf.push("123456789");
         msg_buf.push("000000000");

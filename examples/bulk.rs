@@ -9,7 +9,7 @@ const BATCH_SIZE: u32 = 200;
 const BATCHES: u32 = 10_000;
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
 
     // open a directory called 'log' for segment and index storage
     let opts = LogOptions::new(format!(

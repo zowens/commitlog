@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     pub fn read_entries() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
 
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     pub fn reopen_log() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
 
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     pub fn reopen_log_without_segment_write() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
 
         let dir = TestDir::new();
         let mut opts = LogOptions::new(&dir);
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     pub fn truncate_after_offset_removes_segments() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
 
         let mut opts = LogOptions::new(&dir);
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     pub fn truncate_at_segment_boundary_removes_segments() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
 
         let mut opts = LogOptions::new(&dir);
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     pub fn truncate_after_last_append_does_nothing() {
-        env_logger::init().unwrap_or(());
+        env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
 
         let mut opts = LogOptions::new(&dir);

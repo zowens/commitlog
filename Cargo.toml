@@ -6,14 +6,14 @@ license = "MIT"
 name = "commitlog"
 readme = "README.md"
 repository = "https://github.com/zowens/commitlog"
-version = "0.0.9"
+version = "0.0.10"
 
 [dependencies]
 byteorder = "1.0"
-crc32c = "0.2"
-log = "0.3.6"
-memmap = "0.5"
+crc32c = "0.3"
+log = "0.4.1"
+memmap = "0.6"
 
 [dev-dependencies]
-env_logger = "0.4"
-rand = "0.3"
+env_logger = "0.5"
+rand = "0.4"
