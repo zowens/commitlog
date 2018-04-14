@@ -1,11 +1,11 @@
-use byteorder::{ByteOrder, LittleEndian};
-use memmap::{MmapMut};
-use std::path::{Path, PathBuf};
-use std::io::{self, Write};
-use std::fs::{self, File, OpenOptions};
-use std::{usize, u64};
-use std::cmp::Ordering;
 use super::Offset;
+use byteorder::{ByteOrder, LittleEndian};
+use memmap::MmapMut;
+use std::cmp::Ordering;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::{u64, usize};
 
 /// Number of byes in each entry pair
 pub const INDEX_ENTRY_BYTES: usize = 8;
@@ -47,10 +47,12 @@ where
 }
 
 macro_rules! entry {
-    ($mem:ident, $pos:expr) => (
-        (LittleEndian::read_u32(&$mem[($pos)..($pos) + 4]),
-         LittleEndian::read_u32(&$mem[($pos) + 4..($pos) + 8]))
-    )
+    ($mem:ident, $pos:expr) => {
+        (
+            LittleEndian::read_u32(&$mem[($pos)..($pos) + 4]),
+            LittleEndian::read_u32(&$mem[($pos) + 4..($pos) + 8]),
+        )
+    };
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -77,7 +79,6 @@ impl MessageSetRange {
         self.bytes
     }
 }
-
 
 /// An index is a file with pairs of relative offset to file position offset
 /// of messages at the relative offset messages. The index is Memory Mapped.
@@ -175,7 +176,6 @@ impl Index {
             .append(true)
             .open(&index_path)?;
 
-
         let filename = index_path.as_ref().file_name().unwrap().to_str().unwrap();
         let base_offset = match u64::from_str_radix(&filename[0..INDEX_FILE_NAME_LEN], 10) {
             Ok(v) => v,
@@ -217,8 +217,7 @@ impl Index {
 
         info!(
             "Opening index {}, next write pos {}",
-            filename,
-            next_write_pos
+            filename, next_write_pos
         );
 
         Ok(Index {
@@ -263,8 +262,7 @@ impl Index {
         //trace!("Index append: {:?}", abs_offset, position);
 
         assert_eq!(
-            self.base_offset,
-            offsets.1,
+            self.base_offset, offsets.1,
             "Buffer starting offset does not match the index starting offset"
         );
         assert_eq!(
@@ -299,9 +297,7 @@ impl Index {
                 if let Err(e) = self.file.set_len(self.next_write_pos as u64) {
                     warn!(
                         "Unable to truncate index file {:020}.{} to proper length: {:?}",
-                        self.base_offset,
-                        INDEX_FILE_NAME_EXTENSION,
-                        e
+                        self.base_offset, INDEX_FILE_NAME_EXTENSION, e
                     );
                 }
             }
@@ -335,7 +331,6 @@ impl Index {
                 return None;
             }
         };
-
 
         let mem = &mut self.mmap[..];
 
@@ -453,10 +448,9 @@ impl Index {
             return Err(RangeFindError::MessageExceededMaxBytes);
         }
 
-        let end_ind_pos = binary_search(
-            search_range,
-            |_, pos| (pos - start_file_pos).cmp(&max_bytes),
-        );
+        let end_ind_pos = binary_search(search_range, |_, pos| {
+            (pos - start_file_pos).cmp(&max_bytes)
+        });
 
         let pos = {
             // binary search will choose the next entry when the left value is less, and the
@@ -511,10 +505,9 @@ impl Index {
             }
         }
 
-        let i = binary_search(
-            &mem_slice[0..self.next_write_pos],
-            |v, _| v.cmp(&rel_offset),
-        );
+        let i = binary_search(&mem_slice[0..self.next_write_pos], |v, _| {
+            v.cmp(&rel_offset)
+        });
         trace!("Found offset {} at entry {}", offset, i);
 
         if i < self.next_write_pos / INDEX_ENTRY_BYTES {
@@ -527,12 +520,12 @@ impl Index {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::testutil::*;
+    use super::*;
+    use env_logger;
     use std::fs;
     use std::path::PathBuf;
     use test::test::Bencher;
-    use env_logger;
 
     #[test]
     pub fn index() {
@@ -969,6 +962,8 @@ mod tests {
         }
 
         index.flush_sync().unwrap();
-        b.iter(|| { index.find(943).unwrap(); })
+        b.iter(|| {
+            index.find(943).unwrap();
+        })
     }
 }

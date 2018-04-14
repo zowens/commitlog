@@ -58,28 +58,27 @@ extern crate rand;
 #[cfg(test)]
 extern crate test;
 
-pub mod reader;
-pub mod message;
-mod segment;
-mod index;
 mod file_set;
+mod index;
+pub mod message;
+pub mod reader;
+mod segment;
 #[cfg(test)]
 mod testutil;
 
-use std::path::{Path, PathBuf};
+use index::*;
+use segment::SegmentAppendError;
+use std::error;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::error;
 use std::iter::{DoubleEndedIterator, ExactSizeIterator};
-use segment::SegmentAppendError;
-use index::*;
+use std::path::{Path, PathBuf};
 
-use message::{MessageBuf, MessageSetMut};
-use message::MessageError;
 use file_set::FileSet;
+use message::MessageError;
+use message::{MessageBuf, MessageSetMut};
 use reader::{LogSliceReader, MessageBufReader};
-
 
 /// Offset of an appended log segment.
 pub type Offset = u64;
@@ -155,7 +154,6 @@ impl DoubleEndedIterator for OffsetRangeIter {
         }
     }
 }
-
 
 /// Error enum for commit log Append operation.
 #[derive(Debug)]
@@ -242,7 +240,6 @@ impl Default for ReadLimit {
         ReadLimit(8 * 1024)
     }
 }
-
 
 impl error::Error for ReadError {
     fn description(&self) -> &str {
@@ -433,7 +430,6 @@ impl CommitLog {
         }
     }
 
-
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit.
     #[inline]
     pub fn read(&self, start: Offset, limit: ReadLimit) -> Result<MessageBuf, ReadError> {
@@ -469,9 +465,7 @@ impl CommitLog {
 
         // grab the range from the contained index
         let range = ind.find_segment_range(start, max_bytes, seg_bytes)?;
-        Ok(
-            seg.read_slice(reader, range.file_position(), range.bytes())?,
-        )
+        Ok(seg.read_slice(reader, range.file_position(), range.bytes())?)
     }
 
     /// Truncates a file after the offset supplied. The resulting log will contain
@@ -507,15 +501,14 @@ impl CommitLog {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::testutil::*;
     use super::message::*;
-    use std::fs;
-    use std::collections::HashSet;
+    use super::testutil::*;
+    use super::*;
     use env_logger;
+    use std::collections::HashSet;
+    use std::fs;
 
     #[test]
     pub fn offset_range() {
@@ -556,7 +549,6 @@ mod tests {
         assert_eq!(3, range.len());
         assert_eq!(vec![0, 1, 2], range.iter().collect::<Vec<u64>>());
     }
-
 
     #[test]
     pub fn append_new_segment() {

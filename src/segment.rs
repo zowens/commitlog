@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
 use super::message::*;
 use super::reader::*;
 use super::Offset;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
 
 /// Number of bytes contained in the base name of the file.
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
@@ -105,7 +105,6 @@ impl Segment {
             }
         };
 
-
         let meta = seg_file.metadata()?;
 
         // check the magic
@@ -193,14 +192,13 @@ impl Segment {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::testutil::*;
-    use test::Bencher;
-    use std::path::PathBuf;
+    use super::*;
     use std::fs;
+    use std::path::PathBuf;
+    use test::Bencher;
 
     #[test]
     pub fn log_append() {
@@ -265,7 +263,6 @@ mod tests {
             assert_eq!(0, f.starting_offset());
         }
     }
-
 
     #[test]
     pub fn log_read() {

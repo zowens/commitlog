@@ -1,8 +1,8 @@
 extern crate commitlog;
 extern crate env_logger;
 
-use commitlog::*;
 use commitlog::message::*;
+use commitlog::*;
 use std::time::{self, SystemTime};
 
 const BATCH_SIZE: u32 = 200;

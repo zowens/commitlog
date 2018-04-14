@@ -1,5 +1,5 @@
-use std::fs::File;
 use super::message::{MessageBuf, MessageError};
+use std::fs::File;
 
 /// Trait that allows reading from a slice of the log.
 pub trait LogSliceReader {

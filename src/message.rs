@@ -1,10 +1,10 @@
-use std::iter::{FromIterator, IntoIterator};
-use std::io::{self, Read};
-use std::convert::AsMut;
-use std::u16;
-use byteorder::{ByteOrder, LittleEndian};
 use super::Offset;
+use byteorder::{ByteOrder, LittleEndian};
 use crc32c::{crc32c, crc32c_append};
+use std::convert::AsMut;
+use std::io::{self, Read};
+use std::iter::{FromIterator, IntoIterator};
+use std::u16;
 
 #[derive(Debug)]
 pub enum MessageError {
@@ -20,56 +20,57 @@ impl From<io::Error> for MessageError {
 }
 
 macro_rules! read_n {
-    ($reader:expr, $buf:expr, $size:expr, $err_msg:expr) => ({
-
+    ($reader:expr, $buf:expr, $size:expr, $err_msg:expr) => {{
         match $reader.read(&mut $buf) {
             Ok(s) if s == $size => (),
-            Ok(_) => return Err(
-                MessageError::IoError(
-                    io::Error::new(io::ErrorKind::UnexpectedEof, $err_msg))),
+            Ok(_) => {
+                return Err(MessageError::IoError(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    $err_msg,
+                )))
+            }
             Err(e) => return Err(MessageError::IoError(e)),
         }
-    });
-    ($reader:expr, $buf:expr, $size:expr) => ({
-
+    }};
+    ($reader:expr, $buf:expr, $size:expr) => {{
         match $reader.read(&mut $buf) {
             Ok(s) if s == $size => (),
             Ok(_) => return Err(MessageError::InvalidPayloadLength),
             Err(e) => return Err(MessageError::IoError(e)),
         }
-    })
+    }};
 }
 
 const HEADER_SIZE: usize = 20;
 
 macro_rules! read_header {
-    (offset, $buf:expr) => (
+    (offset, $buf:expr) => {
         LittleEndian::read_u64(&$buf[0..8])
-    );
-    (size, $buf:expr) => (
+    };
+    (size, $buf:expr) => {
         LittleEndian::read_u32(&$buf[8..12])
-    );
-    (hash, $buf:expr) => (
+    };
+    (hash, $buf:expr) => {
         LittleEndian::read_u32(&$buf[12..16])
-    );
-    (meta_size, $buf:expr) => (
+    };
+    (meta_size, $buf:expr) => {
         LittleEndian::read_u16(&$buf[18..20])
-    );
+    };
 }
 
 macro_rules! set_header {
-    (offset, $buf:expr, $v:expr) => (
+    (offset, $buf:expr, $v:expr) => {
         LittleEndian::write_u64(&mut $buf[0..8], $v)
-    );
-    (size, $buf:expr, $v:expr) => (
+    };
+    (size, $buf:expr, $v:expr) => {
         LittleEndian::write_u32(&mut $buf[8..12], $v)
-    );
-    (hash, $buf:expr, $v:expr) => (
+    };
+    (hash, $buf:expr, $v:expr) => {
         LittleEndian::write_u32(&mut $buf[12..16], $v)
-    );
-    (meta_size, $buf:expr, $v:expr) => (
+    };
+    (meta_size, $buf:expr, $v:expr) => {
         LittleEndian::write_u16(&mut $buf[18..20], $v)
-    );
+    };
 }
 
 /// Messages contain finite-sized binary values with an offset from
@@ -129,7 +130,6 @@ impl<'a> Message<'a> {
     pub fn verify_hash(&self) -> bool {
         self.hash() == crc32c(&self.bytes[HEADER_SIZE..])
     }
-
 
     /// Serializes a new message into a buffer
     pub fn serialize<M: AsRef<[u8]>, B: AsRef<[u8]>>(
@@ -431,8 +431,8 @@ pub struct LogEntryMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
     use env_logger;
+    use std::io;
     use test::test::Bencher;
 
     #[test]
@@ -522,7 +522,6 @@ mod tests {
             read_msg_result
         );
     }
-
 
     #[test]
     fn message_read_invalid_payload_length() {

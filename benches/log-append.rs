@@ -9,9 +9,9 @@ mod testutil {
     include!("../src/testutil.rs");
 }
 
-use testutil::TestDir;
-use commitlog::*;
 use commitlog::message::*;
+use commitlog::*;
+use testutil::TestDir;
 
 #[bench]
 fn commitlog_append_10000(b: &mut test::Bencher) {

@@ -2,10 +2,10 @@ use std::fs;
 use std::io;
 use std::mem::swap;
 
-use std::collections::BTreeMap;
 use super::index::*;
 use super::segment::*;
 use super::LogOptions;
+use std::collections::BTreeMap;
 
 pub struct FileSet {
     active: (Index, Segment),
