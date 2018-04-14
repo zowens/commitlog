@@ -226,6 +226,7 @@ pub enum ReadError {
 }
 
 /// Batch size limitation on read.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct ReadLimit(usize);
 impl ReadLimit {
     /// Read limit byte number of bytes.

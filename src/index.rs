@@ -159,10 +159,10 @@ impl Index {
         Ok(Index {
             file: index_file,
             path: index_path,
-            mmap: mmap,
+            mmap,
             mode: AccessMode::ReadWrite,
             next_write_pos: 0,
-            base_offset: base_offset,
+            base_offset,
         })
     }
 
@@ -223,10 +223,10 @@ impl Index {
         Ok(Index {
             file: index_file,
             path: index_path.as_ref().to_path_buf(),
-            mmap: mmap,
+            mmap,
             mode: AccessMode::ReadWrite,
-            next_write_pos: next_write_pos,
-            base_offset: base_offset,
+            next_write_pos,
+            base_offset,
         })
     }
 
@@ -280,7 +280,7 @@ impl Index {
         let start = self.next_write_pos;
         let end = start + offsets.0.len();
 
-        &mut mem_slice[start..end].copy_from_slice(&offsets.0);
+        mem_slice[start..end].copy_from_slice(&offsets.0);
 
         self.next_write_pos = end;
         Ok(())
@@ -341,7 +341,7 @@ impl Index {
         // truncation. This likely occurs when the last offset is the offset
         // requested for truncation OR the offset for truncation is > than the
         // last offset.
-        if off as u64 + self.base_offset <= offset {
+        if u64::from(off) + self.base_offset <= offset {
             trace!("Truncated to exact segment boundary, no need to truncate segment");
             return None;
         }
@@ -390,7 +390,7 @@ impl Index {
             None
         } else {
             let pos = LittleEndian::read_u32(&mem_slice[start + 4..start + 8]);
-            Some((offset as u64 + self.base_offset, pos))
+            Some((u64::from(offset) + self.base_offset, pos))
         }
     }
 
@@ -406,7 +406,7 @@ impl Index {
         self.find_index_pos(offset).and_then(|p| {
             let mem_slice = &self.mmap[..];
             let (rel_off, file_pos) = entry!(mem_slice, p);
-            let abs_off = rel_off as u64 + self.base_offset;
+            let abs_off = u64::from(rel_off) + self.base_offset;
             if abs_off < offset {
                 None
             } else {
@@ -472,7 +472,7 @@ impl Index {
             trace!("Found slice range {}..{}", start_file_pos, pos);
             Ok(MessageSetRange {
                 file_pos: start_file_pos,
-                bytes: bytes,
+                bytes,
             })
         }
     }

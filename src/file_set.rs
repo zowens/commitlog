@@ -92,8 +92,8 @@ impl FileSet {
 
         Ok(FileSet {
             active: (ind, seg),
-            closed: closed,
-            opts: opts,
+            closed,
+            opts,
         })
     }
 

@@ -78,9 +78,9 @@ impl Segment {
         Ok(Segment {
             file: f,
             path: log_path,
-            base_offset: base_offset,
+            base_offset,
             write_pos: 2,
-            max_bytes: max_bytes,
+            max_bytes,
         })
     }
 
@@ -129,8 +129,8 @@ impl Segment {
             file: seg_file,
             path: seg_path.as_ref().to_path_buf(),
             write_pos: meta.len() as usize,
-            base_offset: base_offset,
-            max_bytes: max_bytes,
+            base_offset,
+            max_bytes,
         })
     }
 
@@ -186,7 +186,7 @@ impl Segment {
     /// Truncates the segment file to desired length. Other methods should
     /// ensure that the truncation is at the message boundary.
     pub fn truncate(&mut self, length: u32) -> io::Result<()> {
-        self.file.set_len(length as u64)?;
+        self.file.set_len(u64::from(length))?;
         self.write_pos = length as usize;
         Ok(())
     }

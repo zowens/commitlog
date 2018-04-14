@@ -319,10 +319,7 @@ impl MessageBuf {
                 bytes = &bytes[next_msg_offset..];
             }
         }
-        Ok(MessageBuf {
-            bytes: bytes,
-            len: msgs,
-        })
+        Ok(MessageBuf { bytes, len: msgs })
     }
 
     /// Clears the message buffer.
