@@ -5,6 +5,7 @@ use std::convert::AsMut;
 use std::io::{self, Read};
 use std::iter::{FromIterator, IntoIterator};
 use std::u16;
+use bytes::BufMut;
 
 #[derive(Debug)]
 pub enum MessageError {
@@ -132,11 +133,11 @@ impl<'a> Message<'a> {
     }
 
     /// Serializes a new message into a buffer
-    pub fn serialize<M: AsRef<[u8]>, B: AsRef<[u8]>>(
-        bytes: &mut Vec<u8>,
+    pub fn serialize<B: BufMut, M: AsRef<[u8]>, P: AsRef<[u8]>>(
+        mut bytes: B,
         offset: u64,
         meta: M,
-        payload: B,
+        payload: P,
     ) {
         let payload_slice = payload.as_ref();
         let meta_slice = meta.as_ref();
@@ -152,13 +153,13 @@ impl<'a> Message<'a> {
         set_header!(meta_size, buf, meta_slice.len() as u16);
 
         // add the header
-        bytes.extend_from_slice(&buf);
+        bytes.put_slice(&buf);
 
         // metadata
-        bytes.extend_from_slice(meta_slice);
+        bytes.put_slice(meta_slice);
 
         // payload
-        bytes.extend_from_slice(payload_slice);
+        bytes.put_slice(payload_slice);
     }
 }
 

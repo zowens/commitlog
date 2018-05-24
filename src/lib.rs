@@ -49,6 +49,7 @@ extern crate crc32c;
 #[macro_use]
 extern crate log;
 extern crate memmap;
+extern crate bytes;
 
 #[cfg(test)]
 extern crate env_logger;

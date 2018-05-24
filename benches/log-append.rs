@@ -4,7 +4,6 @@ extern crate commitlog;
 extern crate rand;
 extern crate test;
 
-// yea.. bad idea. But I'm lazy.
 mod testutil {
     include!("../src/testutil.rs");
 }
