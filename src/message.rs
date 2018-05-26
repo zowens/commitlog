@@ -1,11 +1,10 @@
 use super::Offset;
 use byteorder::{ByteOrder, LittleEndian};
+use bytes::BufMut;
 use crc32c::{crc32c, crc32c_append};
-use std::convert::AsMut;
 use std::io::{self, Read};
 use std::iter::{FromIterator, IntoIterator};
 use std::u16;
-use bytes::BufMut;
 
 #[derive(Debug)]
 pub enum MessageError {
@@ -102,6 +101,10 @@ impl<'a> Message<'a> {
     #[inline]
     pub fn size(&self) -> u32 {
         read_header!(size, self.bytes)
+    }
+
+    pub(crate) fn total_bytes(&self) -> usize {
+        self.bytes.len()
     }
 
     /// Offset of the message in the log.
@@ -230,14 +233,8 @@ pub trait MessageSet {
 /// The mutation occurs once the `MessageSet` has been appended to the log. The
 /// messages will contain the absolute offsets after the append opperation.
 pub trait MessageSetMut: MessageSet {
-    /// ByteMut type used to derference a mutable slice of bytes.
-    type ByteMut: AsMut<[u8]>;
-
     /// Bytes of the buffer for mutation.
-    ///
-    /// NOTE: The log will need to mutate the bytes in the buffer
-    /// in order to set the correct offsets upon append.
-    fn bytes_mut(&mut self) -> &mut Self::ByteMut;
+    fn bytes_mut(&mut self) -> &mut [u8];
 }
 
 /// Mutable message buffer.
@@ -263,8 +260,7 @@ impl MessageSet for MessageBuf {
 }
 
 impl MessageSetMut for MessageBuf {
-    type ByteMut = Vec<u8>;
-    fn bytes_mut(&mut self) -> &mut Vec<u8> {
+    fn bytes_mut(&mut self) -> &mut [u8] {
         &mut self.bytes
     }
 }
@@ -383,15 +379,8 @@ impl MessageBuf {
 }
 
 /// Mutates the buffer with starting offset
-#[doc(hidden)]
-pub fn set_offsets<S: MessageSetMut>(
-    msg_set: &mut S,
-    starting_offset: u64,
-    base_file_pos: usize,
-) -> Vec<LogEntryMetadata> {
-    let mut meta = Vec::with_capacity(msg_set.len());
-
-    let bytes = msg_set.bytes_mut().as_mut();
+pub(crate) fn set_offsets<S: MessageSetMut>(msg_set: &mut S, starting_offset: u64) -> usize {
+    let bytes = msg_set.bytes_mut();
 
     let mut rel_off = 0;
     let mut rel_pos = 0;
@@ -399,11 +388,6 @@ pub fn set_offsets<S: MessageSetMut>(
     while rel_pos < bytes.len() {
         // calculate absolute offset, add the metadata
         let abs_off = starting_offset + rel_off;
-
-        meta.push(LogEntryMetadata {
-            offset: abs_off,
-            file_pos: (rel_pos + base_file_pos) as u32,
-        });
 
         // write the absolute offset into the byte buffer
         let msg_start_buf = &mut bytes[rel_pos..];
@@ -415,15 +399,7 @@ pub fn set_offsets<S: MessageSetMut>(
         rel_off += 1;
     }
 
-    meta
-}
-
-/// Holds the pair of offset written to file position in the segment file.
-#[derive(Copy, Clone, Debug)]
-#[doc(hidden)]
-pub struct LogEntryMetadata {
-    pub offset: u64,
-    pub file_pos: u32,
+    rel_off as usize
 }
 
 #[cfg(test)]
@@ -440,8 +416,8 @@ mod tests {
         msg_buf.push("123456789");
         msg_buf.push("000000000");
 
-        // TODO: check metadata
-        set_offsets(&mut msg_buf, 100, 5000);
+        let count = set_offsets(&mut msg_buf, 100);
+        assert_eq!(2, count);
 
         let mut msg_it = msg_buf.iter();
         {
@@ -555,7 +531,7 @@ mod tests {
             buf.push("foo");
             buf.push("bar");
             buf.push("baz");
-            set_offsets(&mut buf, 10, 0);
+            set_offsets(&mut buf, 10);
             buf.into_bytes()
         };
 
@@ -609,7 +585,7 @@ d17317a670ea406fd7e6b485a19f5fb1efe686badb6599d45106b95b55695cd4e
 24729edb312a5dec1bc80e8d8b3ee4b69af1f3a9c801e7fb527e65f7c13c62bb3
 7261c0",
             );
-            set_offsets(&mut msg_buf, 1250, 0);
+            set_offsets(&mut msg_buf, 1250);
         });
     }
 }

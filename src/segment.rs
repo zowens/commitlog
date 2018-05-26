@@ -19,6 +19,25 @@ pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
 /// the start of new index entries.
 pub static VERSION_1_MAGIC: [u8; 2] = [0xff, 0xff];
 
+#[derive(Debug)]
+pub enum SegmentAppendError {
+    LogFull,
+    IoError(io::Error),
+}
+
+impl From<io::Error> for SegmentAppendError {
+    #[inline]
+    fn from(e: io::Error) -> SegmentAppendError {
+        SegmentAppendError::IoError(e)
+    }
+}
+
+pub struct AppendMetadata {
+    pub starting_position: usize,
+    pub starting_offset: u64,
+    pub appended_messages: usize,
+}
+
 /// A segment is a portion of the commit log. Segments are append-only logs written
 /// until the maximum size is reached.
 pub struct Segment {
@@ -36,19 +55,6 @@ pub struct Segment {
 
     /// Maximum number of bytes permitted to be appended to the log
     max_bytes: usize,
-}
-
-#[derive(Debug)]
-pub enum SegmentAppendError {
-    LogFull,
-    IoError(io::Error),
-}
-
-impl From<io::Error> for SegmentAppendError {
-    #[inline]
-    fn from(e: io::Error) -> SegmentAppendError {
-        SegmentAppendError::IoError(e)
-    }
 }
 
 impl Segment {
@@ -147,14 +153,19 @@ impl Segment {
         &mut self,
         payload: &mut T,
         starting_offset: Offset,
-    ) -> Result<Vec<LogEntryMetadata>, SegmentAppendError> {
+    ) -> Result<AppendMetadata, SegmentAppendError> {
         // ensure we have the capacity
         let payload_len = payload.bytes().len();
         if payload_len + self.write_pos > self.max_bytes {
             return Err(SegmentAppendError::LogFull);
         }
 
-        let meta = super::message::set_offsets(payload, starting_offset, self.write_pos);
+        let num_msgs = super::message::set_offsets(payload, starting_offset);
+        let meta = AppendMetadata {
+            starting_offset,
+            starting_position: self.write_pos,
+            appended_messages: num_msgs,
+        };
 
         self.file.write_all(payload.bytes())?;
         self.write_pos += payload_len;
@@ -209,11 +220,12 @@ mod tests {
             let mut buf = MessageBuf::default();
             buf.push("12345");
             let meta = f.append(&mut buf, 5).unwrap();
+            assert_eq!(1, meta.appended_messages);
+            assert_eq!(5, meta.starting_offset);
+            assert_eq!(2, meta.starting_position);
 
-            assert_eq!(1, meta.len());
-            let p0 = meta.iter().next().unwrap();
-            assert_eq!(p0.offset, 5);
-            assert_eq!(p0.file_pos, 2);
+            let m = buf.iter().next().unwrap();
+            assert_eq!(5, m.offset());
         }
 
         {
@@ -221,16 +233,20 @@ mod tests {
             buf.push("66666");
             buf.push("77777");
             let meta = f.append(&mut buf, 6).unwrap();
-            assert_eq!(2, meta.len());
+            assert_eq!(2, meta.appended_messages);
+            assert_eq!(6, meta.starting_offset);
+            assert_eq!(27, meta.starting_position);
 
-            let mut it = meta.iter();
+            let mut it = buf.iter();
             let p0 = it.next().unwrap();
-            assert_eq!(p0.offset, 6);
-            assert_eq!(p0.file_pos, 27);
+            assert_eq!(p0.offset(), 6);
+            assert_eq!(p0.total_bytes(), 25);
+            //assert_eq!(p0.file_pos, 27);
 
             let p1 = it.next().unwrap();
-            assert_eq!(p1.offset, 7);
-            assert_eq!(p1.file_pos, 52);
+            assert_eq!(p1.offset(), 7);
+            assert_eq!(p1.total_bytes(), 25);
+            //assert_eq!(p1.file_pos, 52);
         }
 
         f.flush_sync().unwrap();
@@ -291,17 +307,24 @@ mod tests {
         let log_dir = TestDir::new();
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
-        let meta = {
-            let mut buf = MessageBuf::default();
-            buf.push("0123456789");
-            buf.push("aaaaaaaaaa");
-            buf.push("abc");
-            f.append(&mut buf, 0).unwrap()
+        let mut buf = MessageBuf::default();
+        buf.push("0123456789");
+        buf.push("aaaaaaaaaa");
+        buf.push("abc");
+        let meta = f.append(&mut buf, 0).unwrap();
+
+        let second_msg_start = {
+            let mut it = buf.iter();
+            let mut pos = meta.starting_position;
+            pos += it.next().unwrap().total_bytes();
+            pos
         };
 
         // byte max contains message 0
         let mut reader = MessageBufReader;
-        let msgs = f.read_slice(&mut reader, 2, meta[1].file_pos - 2).unwrap();
+        let msgs = f
+            .read_slice(&mut reader, 2, second_msg_start as u32 - 2)
+            .unwrap();
 
         assert_eq!(1, msgs.len());
     }
@@ -368,40 +391,48 @@ mod tests {
         let log_dir = TestDir::new();
         let mut f = Segment::new(&log_dir, 0, 1024).unwrap();
 
-        let meta = {
-            let mut buf = MessageBuf::default();
-            buf.push("0123456789");
-            buf.push("aaaaaaaaaa");
-            buf.push("abc");
-            f.append(&mut buf, 0).unwrap()
-        };
+        let mut buf = MessageBuf::default();
+        buf.push("0123456789");
+        buf.push("aaaaaaaaaa");
+        buf.push("abc");
+        let meta = f.append(&mut buf, 0).unwrap();
 
         let mut reader = MessageBufReader;
-        let msg_buf = f.read_slice(&mut reader, 2, f.size() as u32 - 2)
+        let msg_buf = f
+            .read_slice(&mut reader, 2, f.size() as u32 - 2)
             .expect("Read after first append failed");
         assert_eq!(3, msg_buf.len());
 
-        // truncate to first message
-        f.truncate(meta[1].file_pos).unwrap();
+        // find the second message starting point position in the segment
+        let second_msg_start = {
+            let mut it = buf.iter();
+            let mut pos = meta.starting_position;
+            pos += it.next().unwrap().total_bytes();
+            pos
+        };
 
-        assert_eq!(meta[1].file_pos as usize, f.size());
+        // truncate to first message
+        f.truncate(second_msg_start as u32).unwrap();
+
+        assert_eq!(second_msg_start, f.size());
 
         let size = fs::metadata(&f.path).unwrap().len();
-        assert_eq!(meta[1].file_pos as u64, size);
+        assert_eq!(second_msg_start as u64, size);
 
         let meta2 = {
             let mut buf = MessageBuf::default();
             buf.push("zzzzzzzzzz");
             f.append(&mut buf, 1).unwrap()
         };
-        assert_eq!(meta[1].file_pos, meta2[0].file_pos);
+        assert_eq!(second_msg_start, meta2.starting_position);
 
         let size = fs::metadata(&f.path).unwrap().len();
         assert_eq!(f.size() as u64, size);
 
         // read the log
         let mut reader = MessageBufReader;
-        let msg_buf = f.read_slice(&mut reader, 2, f.size() as u32 - 2)
+        let msg_buf = f
+            .read_slice(&mut reader, 2, f.size() as u32 - 2)
             .expect("Read after second append failed");
         assert_eq!(2, msg_buf.len());
     }

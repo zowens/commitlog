@@ -372,7 +372,8 @@ impl Index {
         if self.next_write_pos == 0 {
             self.base_offset
         } else {
-            let entry = self.read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
+            let entry = self
+                .read_entry((self.next_write_pos / INDEX_ENTRY_BYTES) - 1)
                 .unwrap();
             entry.0 + 1
         }

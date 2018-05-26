@@ -48,8 +48,8 @@ extern crate byteorder;
 extern crate crc32c;
 #[macro_use]
 extern crate log;
-extern crate memmap;
 extern crate bytes;
+extern crate memmap;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -387,7 +387,7 @@ impl CommitLog {
         // first write to the current segment
         let start_off = self.file_set.active_index_mut().next_offset();
         let entry_res = self.file_set.active_segment_mut().append(buf, start_off);
-        let entries = entry_res.or_else(|e| {
+        let meta = entry_res.or_else(|e| {
             match e {
                 // if the log is full, gracefully close the current segment
                 // and create new one starting from the new offset
@@ -406,19 +406,22 @@ impl CommitLog {
 
         // write to the index
         {
+            // TODO: reduce indexing of every message
             let index = self.file_set.active_index_mut();
-            let mut index_pos_buf = IndexBuf::new(entries.len(), index.starting_offset());
-            for meta in &entries {
-                index_pos_buf.push(meta.offset, meta.file_pos);
+            let mut index_pos_buf = IndexBuf::new(meta.appended_messages, index.starting_offset());
+            let mut pos = meta.starting_position;
+            for m in buf.iter() {
+                index_pos_buf.push(m.offset(), pos as u32);
+                pos += m.total_bytes();
             }
             // TODO: what happens when this errors out? Do we truncate the log...?
             index.append(index_pos_buf)?;
         }
 
-        // TODO: fix this with Option?
-        match entries.first() {
-            Some(v) => Ok(OffsetRange(v.offset, entries.len())),
-            None => Ok(OffsetRange(start_off, 0)),
+        if meta.appended_messages > 0 {
+            Ok(OffsetRange(meta.starting_offset, meta.appended_messages))
+        } else {
+            Ok(OffsetRange(start_off, 0))
         }
     }
 

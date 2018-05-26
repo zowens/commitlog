@@ -46,7 +46,8 @@ fn main() {
     let mut iterations = 0;
     let mut pos = 0;
     loop {
-        let entries = log.read(pos, ReadLimit::max_bytes(10_240))
+        let entries = log
+            .read(pos, ReadLimit::max_bytes(10_240))
             .expect("Unable to read messages from the log");
         match entries.iter().last().map(|m| m.offset()) {
             Some(off) => {

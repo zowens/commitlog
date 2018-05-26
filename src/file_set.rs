@@ -153,7 +153,8 @@ impl FileSet {
         //    [0 5 10 15] => split key 5
         //
         // midpoint  is then used as the active index/segment pair
-        let split_key = match self.closed
+        let split_key = match self
+            .closed
             .range(..offset + 1)
             .next_back()
             .map(|p| p.0)
