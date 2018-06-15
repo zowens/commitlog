@@ -43,6 +43,7 @@
 #![feature(test, collections_bound, step_by)]
 // (for test) This is silly...
 #![allow(unused_features, unknown_lints)]
+#![deny(missing_docs, missing_copy_implementations)]
 
 extern crate byteorder;
 extern crate crc32c;
@@ -115,6 +116,7 @@ impl OffsetRange {
 }
 
 /// Iterator of offsets within an `OffsetRange`.
+#[derive(Copy, Clone, Debug)]
 pub struct OffsetRangeIter {
     pos: u64,
     end: u64,

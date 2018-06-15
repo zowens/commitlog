@@ -1,3 +1,4 @@
+//! Custom log reading.
 use super::message::{MessageBuf, MessageError};
 use std::fs::File;
 
@@ -23,7 +24,7 @@ pub trait LogSliceReader {
 }
 
 #[cfg(unix)]
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 /// Reader of the file segment into memory.
 pub struct MessageBufReader;
 

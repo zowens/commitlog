@@ -1,3 +1,4 @@
+//! Message encoding used for the on-disk format for the log.
 use super::Offset;
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::BufMut;
@@ -6,10 +7,14 @@ use std::io::{self, Read};
 use std::iter::{FromIterator, IntoIterator};
 use std::u16;
 
+/// Error for the message encoding or decoding.
 #[derive(Debug)]
 pub enum MessageError {
+    /// `std::io` Error
     IoError(io::Error),
+    /// Invalid crc32c hash encountered
     InvalidHash,
+    /// Message payload is mismatched by the size field.
     InvalidPayloadLength,
 }
 
@@ -119,11 +124,13 @@ impl<'a> Message<'a> {
         &self.bytes[(HEADER_SIZE + self.metadata_size() as usize)..]
     }
 
+    /// Size of the metadata bytes.
     #[inline]
     pub fn metadata_size(&self) -> u16 {
         read_header!(meta_size, self.bytes)
     }
 
+    /// Metadata bytes of hte message.
     #[inline]
     pub fn metadata(&self) -> &[u8] {
         &self.bytes[HEADER_SIZE..(HEADER_SIZE + self.metadata_size() as usize)]
