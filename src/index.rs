@@ -1,6 +1,7 @@
 use super::Offset;
 use byteorder::{ByteOrder, LittleEndian};
 use memmap::MmapMut;
+use page_size;
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -90,6 +91,7 @@ pub struct Index {
 
     /// next starting byte in index file offset to write
     next_write_pos: usize,
+    last_flush_end_pos: usize,
     base_offset: u64,
 }
 
@@ -122,6 +124,14 @@ impl IndexBuf {
         LittleEndian::write_u32(&mut tmp_buf[4..], position);
         self.0.extend_from_slice(&tmp_buf);
     }
+}
+
+#[inline]
+fn to_page_size(size: usize) -> usize {
+    let truncated = size - (size & (page_size::get() - 1));
+    assert_eq!(truncated % page_size::get(), 0);
+    assert!(truncated <= size);
+    truncated
 }
 
 impl Index {
@@ -162,6 +172,7 @@ impl Index {
             mmap,
             mode: AccessMode::ReadWrite,
             next_write_pos: 0,
+            last_flush_end_pos: 0,
             base_offset,
         })
     }
@@ -226,6 +237,7 @@ impl Index {
             mmap,
             mode: AccessMode::ReadWrite,
             next_write_pos,
+            last_flush_end_pos: next_write_pos,
             base_offset,
         })
     }
@@ -363,9 +375,19 @@ impl Index {
         Some(file_len)
     }
 
+    /// Flush the index at page boundaries. This may leave some indexed values
+    /// not flushed during crash, which will be rehydrated on restart.
     pub fn flush_sync(&mut self) -> io::Result<()> {
-        self.mmap.flush()?;
-        self.file.flush()
+        let start = to_page_size(self.last_flush_end_pos);
+        let end = to_page_size(self.next_write_pos);
+
+        if end > start {
+            self.mmap.flush_range(start, end - start)?;
+            self.last_flush_end_pos = end;
+            self.file.flush()
+        } else {
+            Ok(())
+        }
     }
 
     pub fn next_offset(&self) -> Offset {
@@ -965,6 +987,22 @@ mod tests {
         index.flush_sync().unwrap();
         b.iter(|| {
             index.find(943).unwrap();
+        })
+    }
+
+    #[bench]
+    fn bench_insert_flush(b: &mut Bencher) {
+        let dir = TestDir::new();
+        let mut index = Index::new(&dir, 10u64, 9000usize).unwrap();
+
+        b.iter(|| {
+            let mut buf = IndexBuf::new(20, 10u64);
+            for j in 0..20 {
+                let off = 10u32 + j;
+                buf.push(off as u64, off);
+            }
+            index.append(buf).unwrap();
+            index.flush_sync().unwrap();
         })
     }
 }

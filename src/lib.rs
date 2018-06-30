@@ -51,6 +51,7 @@ extern crate crc32c;
 extern crate log;
 extern crate bytes;
 extern crate memmap;
+extern crate page_size;
 
 #[cfg(test)]
 extern crate env_logger;

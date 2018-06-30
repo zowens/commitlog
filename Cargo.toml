@@ -7,13 +7,13 @@ name = "commitlog"
 readme = "README.md"
 repository = "https://github.com/zowens/commitlog"
 version = "0.0.10"
-
 [dependencies]
 byteorder = "1.0"
 bytes = "0.4.7"
 crc32c = "0.3"
 log = "0.4.1"
 memmap = "0.6"
+page_size = "0.4.1"
 
 [dev-dependencies]
 env_logger = "0.5"
