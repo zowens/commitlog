@@ -72,7 +72,6 @@ impl Segment {
         };
 
         let mut f = OpenOptions::new()
-            .write(true)
             .read(true)
             .create_new(true)
             .append(true)
@@ -448,6 +447,21 @@ mod tests {
             let mut buf = MessageBuf::default();
             buf.push(payload);
             seg.append(&mut buf, 0).unwrap();
+        });
+    }
+
+    #[bench]
+    fn bench_segment_append_flush(b: &mut Bencher) {
+        let path = TestDir::new();
+
+        let mut seg = Segment::new(path, 100u64, 100 * 1024 * 1024).unwrap();
+        let payload = b"01234567891011121314151617181920";
+
+        b.iter(|| {
+            let mut buf = MessageBuf::default();
+            buf.push(payload);
+            seg.append(&mut buf, 0).unwrap();
+            seg.flush_sync().unwrap();
         });
     }
 }
