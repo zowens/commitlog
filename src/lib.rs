@@ -80,7 +80,7 @@ use std::path::{Path, PathBuf};
 
 use file_set::FileSet;
 use message::MessageError;
-use message::{MessageBuf, MessageSetMut};
+use message::{MessageBuf, MessageSet, MessageSetMut};
 use reader::{LogSliceReader, MessageBufReader};
 
 /// Offset of an appended log segment.
@@ -175,6 +175,8 @@ pub enum AppendError {
     /// If a message that is larger than the per message size is tried to be appended
     /// it will not be allowed an will return an error
     MessageSizeExceeded,
+    /// The buffer contains an invalid offset value
+    InvalidOffset,
 }
 
 impl From<io::Error> for AppendError {
@@ -196,6 +198,7 @@ impl error::Error for AppendError {
             AppendError::MessageSizeExceeded => {
                 "While attempting to write a message, the per message size was exceeded"
             }
+            AppendError::InvalidOffset => "Invalid offsets set on buffer of messages",
         }
     }
 
@@ -214,6 +217,7 @@ impl fmt::Display for AppendError {
             AppendError::FreshIndexNotWritable => write!(f, "Fresh index error"),
             AppendError::FreshSegmentNotWritable => write!(f, "Fresh segment error"),
             AppendError::MessageSizeExceeded => write!(f, "Message Size exceeded error"),
+            AppendError::InvalidOffset => write!(f, "Invalid offsets set of buffer of messages"),
         }
     }
 }
@@ -369,6 +373,7 @@ impl CommitLog {
     }
 
     /// Appends a single message to the log, returning the offset appended.
+    #[inline]
     pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
         let mut buf = MessageBuf::default();
         buf.push(payload);
@@ -378,40 +383,62 @@ impl CommitLog {
     }
 
     /// Appends log entrites to the commit log, returning the offsets appended.
+    #[inline]
     pub fn append<T>(&mut self, buf: &mut T) -> Result<OffsetRange, AppendError>
     where
         T: MessageSetMut,
     {
+        let start_off = self.file_set.active_index_mut().next_offset();
+        message::set_offsets(buf, start_off);
+        self.append_with_offsets(buf)
+    }
+
+    /// Appends log entrites to the commit log, returning the offsets appended.
+    ///
+    /// The offsets are expected to already be set within the buffer.
+    pub fn append_with_offsets<T>(&mut self, buf: &T) -> Result<OffsetRange, AppendError>
+    where
+        T: MessageSet,
+    {
+        let buf_len = buf.len();
+        if buf_len == 0 {
+            return Ok(OffsetRange(0, 0));
+        }
+
         //Check if given message exceeded the max size
         if buf.bytes().len() > self.file_set.log_options().message_max_bytes {
             return Err(AppendError::MessageSizeExceeded);
         }
 
         // first write to the current segment
-        let start_off = self.file_set.active_index_mut().next_offset();
-        let entry_res = self.file_set.active_segment_mut().append(buf, start_off);
-        let meta = entry_res.or_else(|e| {
-            match e {
-                // if the log is full, gracefully close the current segment
-                // and create new one starting from the new offset
-                SegmentAppendError::LogFull => {
-                    try!(self.file_set.roll_segment());
+        let start_off = self.next_offset();
 
-                    // try again, giving up if we have to
-                    self.file_set
-                        .active_segment_mut()
-                        .append(buf, start_off)
-                        .map_err(|_| AppendError::FreshSegmentNotWritable)
-                }
-                SegmentAppendError::IoError(e) => Err(AppendError::Io(e)),
-            }
-        })?;
+        // check to make sure the first message matches the starting offset
+        if buf.iter().next().unwrap().offset() != start_off {
+            return Err(AppendError::InvalidOffset);
+        }
+
+        let meta = match self.file_set.active_segment_mut().append(buf) {
+            Ok(meta) => meta,
+            // if the log is full, gracefully close the current segment
+            // and create new one starting from the new offset
+            Err(SegmentAppendError::LogFull) => {
+                self.file_set.roll_segment()?;
+
+                // try again, giving up if we have to
+                self.file_set
+                    .active_segment_mut()
+                    .append(buf)
+                    .map_err(|_| AppendError::FreshSegmentNotWritable)?
+            },
+            Err(SegmentAppendError::IoError(e)) => return Err(AppendError::Io(e))
+        };
 
         // write to the index
         {
             // TODO: reduce indexing of every message
             let index = self.file_set.active_index_mut();
-            let mut index_pos_buf = IndexBuf::new(meta.appended_messages, index.starting_offset());
+            let mut index_pos_buf = IndexBuf::new(buf_len, index.starting_offset());
             let mut pos = meta.starting_position;
             for m in buf.iter() {
                 index_pos_buf.push(m.offset(), pos as u32);
@@ -421,11 +448,7 @@ impl CommitLog {
             index.append(index_pos_buf)?;
         }
 
-        if meta.appended_messages > 0 {
-            Ok(OffsetRange(meta.starting_offset, meta.appended_messages))
-        } else {
-            Ok(OffsetRange(start_off, 0))
-        }
+        Ok(OffsetRange(start_off, buf_len))
     }
 
     /// Gets the last written offset.
@@ -436,6 +459,12 @@ impl CommitLog {
         } else {
             Some(next_off - 1)
         }
+    }
+
+    /// Gets the latest offset
+    #[inline]
+    pub fn next_offset(&self) -> Offset {
+        self.file_set.active_index().next_offset()
     }
 
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit.

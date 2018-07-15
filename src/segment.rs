@@ -1,6 +1,5 @@
-use super::message::*;
 use super::reader::*;
-use super::Offset;
+use super::*;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::FileExt;
@@ -34,8 +33,6 @@ impl From<io::Error> for SegmentAppendError {
 
 pub struct AppendMetadata {
     pub starting_position: usize,
-    pub starting_offset: u64,
-    pub appended_messages: usize,
 }
 
 /// A segment is a portion of the commit log. Segments are append-only logs written
@@ -148,10 +145,9 @@ impl Segment {
         self.base_offset
     }
 
-    pub fn append<T: MessageSetMut>(
+    pub fn append<T: MessageSet>(
         &mut self,
-        payload: &mut T,
-        starting_offset: Offset,
+        payload: &T,
     ) -> Result<AppendMetadata, SegmentAppendError> {
         // ensure we have the capacity
         let payload_len = payload.bytes().len();
@@ -159,11 +155,8 @@ impl Segment {
             return Err(SegmentAppendError::LogFull);
         }
 
-        let num_msgs = super::message::set_offsets(payload, starting_offset);
         let meta = AppendMetadata {
-            starting_offset,
             starting_position: self.write_pos,
-            appended_messages: num_msgs,
         };
 
         self.file.write_all(payload.bytes())?;
@@ -204,6 +197,7 @@ impl Segment {
 
 #[cfg(test)]
 mod tests {
+    use super::super::message::set_offsets;
     use super::super::testutil::*;
     use super::*;
     use std::fs;
@@ -218,34 +212,23 @@ mod tests {
         {
             let mut buf = MessageBuf::default();
             buf.push("12345");
-            let meta = f.append(&mut buf, 5).unwrap();
-            assert_eq!(1, meta.appended_messages);
-            assert_eq!(5, meta.starting_offset);
+            let meta = f.append(&mut buf).unwrap();
             assert_eq!(2, meta.starting_position);
-
-            let m = buf.iter().next().unwrap();
-            assert_eq!(5, m.offset());
         }
 
         {
             let mut buf = MessageBuf::default();
             buf.push("66666");
             buf.push("77777");
-            let meta = f.append(&mut buf, 6).unwrap();
-            assert_eq!(2, meta.appended_messages);
-            assert_eq!(6, meta.starting_offset);
+            let meta = f.append(&mut buf).unwrap();
             assert_eq!(27, meta.starting_position);
 
             let mut it = buf.iter();
             let p0 = it.next().unwrap();
-            assert_eq!(p0.offset(), 6);
             assert_eq!(p0.total_bytes(), 25);
-            //assert_eq!(p0.file_pos, 27);
 
             let p1 = it.next().unwrap();
-            assert_eq!(p1.offset(), 7);
             assert_eq!(p1.total_bytes(), 25);
-            //assert_eq!(p1.file_pos, 52);
         }
 
         f.flush_sync().unwrap();
@@ -260,7 +243,7 @@ mod tests {
             let mut buf = MessageBuf::default();
             buf.push("12345");
             buf.push("66666");
-            f.append(&mut buf, 0).unwrap();
+            f.append(&mut buf).unwrap();
             f.flush_sync().unwrap();
         }
 
@@ -289,7 +272,8 @@ mod tests {
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
-            f.append(&mut buf, 0).unwrap();
+            set_offsets(&mut buf, 0);
+            f.append(&mut buf).unwrap();
         }
 
         let mut reader = MessageBufReader;
@@ -310,7 +294,8 @@ mod tests {
         buf.push("0123456789");
         buf.push("aaaaaaaaaa");
         buf.push("abc");
-        let meta = f.append(&mut buf, 0).unwrap();
+        set_offsets(&mut buf, 0);
+        let meta = f.append(&mut buf).unwrap();
 
         let second_msg_start = {
             let mut it = buf.iter();
@@ -338,7 +323,8 @@ mod tests {
             buf.push("0123456789");
             buf.push("aaaaaaaaaa");
             buf.push("abc");
-            f.append(&mut buf, 0).unwrap();
+            set_offsets(&mut buf, 0);
+            f.append(&mut buf).unwrap();
         }
 
         let mut reader = MessageBufReader;
@@ -348,7 +334,8 @@ mod tests {
         {
             let mut buf = MessageBuf::default();
             buf.push("foo");
-            f.append(&mut buf, 3).unwrap();
+            set_offsets(&mut buf, 3);
+            f.append(&mut buf).unwrap();
         }
 
         let msgs = f.read_slice(&mut reader, 2, 106).unwrap();
@@ -394,7 +381,8 @@ mod tests {
         buf.push("0123456789");
         buf.push("aaaaaaaaaa");
         buf.push("abc");
-        let meta = f.append(&mut buf, 0).unwrap();
+        set_offsets(&mut buf, 0);
+        let meta = f.append(&mut buf).unwrap();
 
         let mut reader = MessageBufReader;
         let msg_buf = f
@@ -421,7 +409,8 @@ mod tests {
         let meta2 = {
             let mut buf = MessageBuf::default();
             buf.push("zzzzzzzzzz");
-            f.append(&mut buf, 1).unwrap()
+            set_offsets(&mut buf, 1);
+            f.append(&mut buf).unwrap()
         };
         assert_eq!(second_msg_start, meta2.starting_position);
 
@@ -446,7 +435,7 @@ mod tests {
         b.iter(|| {
             let mut buf = MessageBuf::default();
             buf.push(payload);
-            seg.append(&mut buf, 0).unwrap();
+            seg.append(&mut buf).unwrap();
         });
     }
 
@@ -460,7 +449,7 @@ mod tests {
         b.iter(|| {
             let mut buf = MessageBuf::default();
             buf.push(payload);
-            seg.append(&mut buf, 0).unwrap();
+            seg.append(&mut buf).unwrap();
             seg.flush_sync().unwrap();
         });
     }

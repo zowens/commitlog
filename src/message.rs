@@ -5,6 +5,7 @@ use bytes::BufMut;
 use crc32c::{crc32c, crc32c_append};
 use std::io::{self, Read};
 use std::iter::{FromIterator, IntoIterator};
+use std::mem;
 use std::u16;
 
 /// Error for the message encoding or decoding.
@@ -78,6 +79,36 @@ macro_rules! set_header {
     };
 }
 
+/// Serializes a new message into a buffer
+pub fn serialize<B: BufMut, M: AsRef<[u8]>, P: AsRef<[u8]>>(
+    mut bytes: B,
+    offset: u64,
+    meta: M,
+    payload: P,
+) {
+    let payload_slice = payload.as_ref();
+    let meta_slice = meta.as_ref();
+    assert!(
+        meta_slice.len() < (u16::MAX) as usize,
+        "Metadata cannot exceed 2^16 in length"
+    );
+
+    let mut buf = [0; HEADER_SIZE];
+    set_header!(offset, buf, offset);
+    set_header!(size, buf, (meta_slice.len() + payload_slice.len()) as u32);
+    set_header!(hash, buf, crc32c_append(crc32c(meta_slice), payload_slice));
+    set_header!(meta_size, buf, meta_slice.len() as u16);
+
+    // add the header
+    bytes.put_slice(&buf);
+
+    // metadata
+    bytes.put_slice(meta_slice);
+
+    // payload
+    bytes.put_slice(payload_slice);
+}
+
 /// Messages contain finite-sized binary values with an offset from
 /// the beginning of the log.
 ///
@@ -141,35 +172,61 @@ impl<'a> Message<'a> {
     pub fn verify_hash(&self) -> bool {
         self.hash() == crc32c(&self.bytes[HEADER_SIZE..])
     }
+}
 
-    /// Serializes a new message into a buffer
-    pub fn serialize<B: BufMut, M: AsRef<[u8]>, P: AsRef<[u8]>>(
-        mut bytes: B,
-        offset: u64,
-        meta: M,
-        payload: P,
-    ) {
-        let payload_slice = payload.as_ref();
-        let meta_slice = meta.as_ref();
-        assert!(
-            meta_slice.len() < (u16::MAX) as usize,
-            "Metadata cannot exceed 2^16 in length"
-        );
+/// Iterator for Messages allowing mutation of offsets
+#[derive(Debug)]
+pub struct MessageMut<'a> {
+    bytes: &'a mut [u8],
+}
 
-        let mut buf = [0; HEADER_SIZE];
-        set_header!(offset, buf, offset);
-        set_header!(size, buf, (meta_slice.len() + payload_slice.len()) as u32);
-        set_header!(hash, buf, crc32c_append(crc32c(meta_slice), payload_slice));
-        set_header!(meta_size, buf, meta_slice.len() as u16);
+impl<'a> MessageMut<'a> {
+    /// crc32c of the payload.
+    #[inline]
+    pub fn hash(&self) -> u32 {
+        read_header!(hash, self.bytes)
+    }
 
-        // add the header
-        bytes.put_slice(&buf);
+    /// Size of the payload.
+    #[inline]
+    pub fn size(&self) -> u32 {
+        read_header!(size, self.bytes)
+    }
 
-        // metadata
-        bytes.put_slice(meta_slice);
+    /// Offset of the message in the log.
+    #[inline]
+    pub fn offset(&self) -> Offset {
+        read_header!(offset, self.bytes)
+    }
 
-        // payload
-        bytes.put_slice(payload_slice);
+    /// Payload of the message.
+    #[inline]
+    pub fn payload(&self) -> &[u8] {
+        &self.bytes[(HEADER_SIZE + self.metadata_size() as usize)..]
+    }
+
+    /// Size of the metadata bytes.
+    #[inline]
+    pub fn metadata_size(&self) -> u16 {
+        read_header!(meta_size, self.bytes)
+    }
+
+    /// Metadata bytes of hte message.
+    #[inline]
+    pub fn metadata(&self) -> &[u8] {
+        &self.bytes[HEADER_SIZE..(HEADER_SIZE + self.metadata_size() as usize)]
+    }
+
+    /// Check that the hash matches the hash of the payload.
+    #[inline]
+    pub fn verify_hash(&self) -> bool {
+        self.hash() == crc32c(&self.bytes[HEADER_SIZE..])
+    }
+
+    /// Sets the offset of the message
+    #[inline]
+    pub fn set_offset(&mut self, offset: u64) {
+        set_header!(offset, self.bytes, offset);
     }
 }
 
@@ -194,6 +251,33 @@ impl<'a> Iterator for MessageIter<'a> {
         let message_slice = &self.bytes[0..HEADER_SIZE + size];
         self.bytes = &self.bytes[HEADER_SIZE + size..];
         Some(Message {
+            bytes: message_slice,
+        })
+    }
+}
+
+/// Iterator for `Message` within a `MessageSet`.
+pub struct MessageMutIter<'a> {
+    bytes: &'a mut [u8],
+}
+
+impl<'a> Iterator for MessageMutIter<'a> {
+    type Item = MessageMut<'a>;
+
+    fn next(&mut self) -> Option<MessageMut<'a>> {
+        let slice = mem::replace(&mut self.bytes, &mut []);
+        if slice.len() < HEADER_SIZE {
+            return None;
+        }
+
+        let size = read_header!(size, slice) as usize;
+
+        trace!("message iterator: size {} bytes", size);
+        assert!(slice.len() >= HEADER_SIZE + size);
+
+        let (message_slice, rest) = slice.split_at_mut(HEADER_SIZE + size);
+        self.bytes = rest;
+        Some(MessageMut {
             bytes: message_slice,
         })
     }
@@ -242,6 +326,13 @@ pub trait MessageSet {
 pub trait MessageSetMut: MessageSet {
     /// Bytes of the buffer for mutation.
     fn bytes_mut(&mut self) -> &mut [u8];
+
+    /// Mutable iterator
+    fn iter_mut(&mut self) -> MessageMutIter {
+        MessageMutIter {
+            bytes: self.bytes_mut(),
+        }
+    }
 }
 
 /// Mutable message buffer.
@@ -348,7 +439,7 @@ impl MessageBuf {
         // blank offset, expect the log to set the offsets
         // empty metadata
         let meta = [0u8; 0];
-        Message::serialize(&mut self.bytes, 0u64, &meta, payload);
+        serialize(&mut self.bytes, 0u64, &meta, payload);
         self.len += 1;
     }
 
@@ -356,7 +447,7 @@ impl MessageBuf {
     pub fn push_with_metadata<M: AsRef<[u8]>, B: AsRef<[u8]>>(&mut self, metadata: M, payload: B) {
         // blank offset, expect the log to set the offsets
         // empty metadata
-        Message::serialize(&mut self.bytes, 0u64, metadata, payload);
+        serialize(&mut self.bytes, 0u64, metadata, payload);
         self.len += 1;
     }
 
@@ -386,27 +477,13 @@ impl MessageBuf {
 }
 
 /// Mutates the buffer with starting offset
-pub(crate) fn set_offsets<S: MessageSetMut>(msg_set: &mut S, starting_offset: u64) -> usize {
-    let bytes = msg_set.bytes_mut();
+pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S, starting_offset: u64) {
+    let mut offset = starting_offset;
 
-    let mut rel_off = 0;
-    let mut rel_pos = 0;
-
-    while rel_pos < bytes.len() {
-        // calculate absolute offset, add the metadata
-        let abs_off = starting_offset + rel_off;
-
-        // write the absolute offset into the byte buffer
-        let msg_start_buf = &mut bytes[rel_pos..];
-        set_header!(offset, msg_start_buf, abs_off);
-
-        // bump the relative position of the message
-        let payload_size = read_header!(size, msg_start_buf);
-        rel_pos += HEADER_SIZE + payload_size as usize;
-        rel_off += 1;
+    for ref mut msg in msg_set.iter_mut() {
+        msg.set_offset(offset);
+        offset += 1;
     }
-
-    rel_off as usize
 }
 
 #[cfg(test)]
@@ -423,8 +500,7 @@ mod tests {
         msg_buf.push("123456789");
         msg_buf.push("000000000");
 
-        let count = set_offsets(&mut msg_buf, 100);
-        assert_eq!(2, count);
+        set_offsets(&mut msg_buf, 100);
 
         let mut msg_it = msg_buf.iter();
         {
@@ -450,7 +526,7 @@ mod tests {
     #[test]
     fn message_read() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"", b"123456789");
+        serialize(&mut buf, 120, b"", b"123456789");
         let mut buf_reader = io::BufReader::new(buf.as_slice());
 
         let mut reader = MessageBuf::default();
@@ -466,7 +542,7 @@ mod tests {
     #[test]
     fn message_construction_with_metadata() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"123", b"456789");
+        serialize(&mut buf, 120, b"123", b"456789");
         let res = MessageBuf::from_bytes(buf).unwrap();
         let msg = res.iter().next().unwrap();
         assert_eq!(b"123", msg.metadata());
@@ -485,7 +561,7 @@ mod tests {
     #[test]
     fn message_read_invalid_hash() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"", b"123456789");
+        serialize(&mut buf, 120, b"", b"123456789");
         // mess with the payload such that the hash does not match
         let last_ind = buf.len() - 1;
         buf[last_ind] ^= buf[last_ind] + 1;
@@ -507,7 +583,7 @@ mod tests {
     #[test]
     fn message_read_invalid_payload_length() {
         let mut buf = Vec::new();
-        Message::serialize(&mut buf, 120, b"", b"123456789");
+        serialize(&mut buf, 120, b"", b"123456789");
         // pop the last byte
         buf.pop();
 
