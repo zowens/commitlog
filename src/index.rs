@@ -72,11 +72,11 @@ pub struct MessageSetRange {
 }
 
 impl MessageSetRange {
-    pub fn file_position(&self) -> u32 {
+    pub fn file_position(self) -> u32 {
         self.file_pos
     }
 
-    pub fn bytes(&self) -> u32 {
+    pub fn bytes(self) -> u32 {
         self.bytes
     }
 }

@@ -480,7 +480,7 @@ impl MessageBuf {
 pub fn set_offsets<S: MessageSetMut>(msg_set: &mut S, starting_offset: u64) {
     let mut offset = starting_offset;
 
-    for ref mut msg in msg_set.iter_mut() {
+    for mut msg in msg_set.iter_mut() {
         msg.set_offset(offset);
         offset += 1;
     }
