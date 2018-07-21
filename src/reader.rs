@@ -18,9 +18,6 @@ pub trait LogSliceReader {
         file_position: u32,
         bytes: usize,
     ) -> Result<Self::Result, MessageError>;
-
-    /// Called when there are no commits in the log in the desired range.
-    fn empty() -> Self::Result;
 }
 
 #[cfg(unix)]
@@ -42,9 +39,5 @@ impl LogSliceReader for MessageBufReader {
         let mut vec = vec![0; bytes];
         try!(file.read_at(&mut vec, u64::from(file_position)));
         MessageBuf::from_bytes(vec)
-    }
-
-    fn empty() -> Self::Result {
-        MessageBuf::default()
     }
 }
