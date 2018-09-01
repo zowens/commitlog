@@ -369,7 +369,6 @@ impl<R: AsRef<[u8]>> FromIterator<R> for MessageBuf {
         T: IntoIterator<Item = R>,
     {
         let mut buf = MessageBuf::default();
-        #[allow(explicit_into_iter_loop)]
         for v in iter.into_iter() {
             buf.push(v);
         }
