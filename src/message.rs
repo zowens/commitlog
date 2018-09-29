@@ -55,7 +55,7 @@ macro_rules! read_n {
     }};
 }
 
-const HEADER_SIZE: usize = 20;
+pub const HEADER_SIZE: usize = 20;
 
 macro_rules! read_header {
     (offset, $buf:expr) => {
