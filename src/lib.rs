@@ -373,7 +373,7 @@ impl CommitLog {
     #[inline]
     pub fn append_msg<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<Offset, AppendError> {
         let mut buf = MessageBuf::default();
-        buf.push(payload);
+        buf.push(payload).expect("Payload size exceeds usize::MAX");
         let res = self.append(&mut buf)?;
         assert_eq!(res.len(), 1);
         Ok(res.first())
@@ -427,8 +427,8 @@ impl CommitLog {
                     .active_segment_mut()
                     .append(buf)
                     .map_err(|_| AppendError::FreshSegmentNotWritable)?
-            },
-            Err(SegmentAppendError::IoError(e)) => return Err(AppendError::Io(e))
+            }
+            Err(SegmentAppendError::IoError(e)) => return Err(AppendError::Io(e)),
         };
 
         // write to the index
@@ -472,7 +472,6 @@ impl CommitLog {
             Some(v) => Ok(v),
             None => Ok(MessageBuf::default()),
         }
-
     }
 
     /// Reads a portion of the log, starting with the `start` offset, inclusive, up to the limit
@@ -506,7 +505,11 @@ impl CommitLog {
         if range.bytes() == 0 {
             Ok(None)
         } else {
-            Ok(Some(seg.read_slice(reader, range.file_position(), range.bytes())?))
+            Ok(Some(seg.read_slice(
+                reader,
+                range.file_position(),
+                range.bytes(),
+            )?))
         }
     }
 

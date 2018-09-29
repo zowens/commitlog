@@ -24,7 +24,8 @@ fn commitlog_append_10000(b: &mut test::Bencher) {
                  81f9dc16a874d0eda0983b79c1a6f79fe3ae61612ba2558562a85595f2f3f \
                  07fab8faba1b849685b61aad6b131b7041ca79cc662b4c5aad4d1b78fb103 \
                  4fafa2fe4f30207395e399c6d724",
-            ).unwrap();
+            )
+            .unwrap();
         }
         log.flush().unwrap();
     });

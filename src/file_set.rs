@@ -118,7 +118,7 @@ impl FileSet {
             );
             Some(&self.active)
         } else {
-            self.closed.range(..(offset + 1)).next_back().map(|p| p.1)
+            self.closed.range(..=offset).next_back().map(|p| p.1)
         }
     }
 
@@ -155,7 +155,7 @@ impl FileSet {
         // midpoint  is then used as the active index/segment pair
         let split_key = match self
             .closed
-            .range(..offset + 1)
+            .range(..=offset)
             .next_back()
             .map(|p| p.0)
             .cloned()

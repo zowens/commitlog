@@ -19,6 +19,14 @@ pub enum MessageError {
     InvalidPayloadLength,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum MessageSerializationError {
+    /// The Metdata is too large to serialize
+    MetadataExceedsLimit,
+    /// The payload and metadata exceed the buffer size
+    TotalSizeExceedsBuffer,
+}
+
 impl From<io::Error> for MessageError {
     fn from(e: io::Error) -> MessageError {
         MessageError::IoError(e)
@@ -85,13 +93,17 @@ pub fn serialize<B: BufMut, M: AsRef<[u8]>, P: AsRef<[u8]>>(
     offset: u64,
     meta: M,
     payload: P,
-) {
+) -> Result<(), MessageSerializationError> {
     let payload_slice = payload.as_ref();
     let meta_slice = meta.as_ref();
-    assert!(
-        meta_slice.len() < (u16::MAX) as usize,
-        "Metadata cannot exceed 2^16 in length"
-    );
+    if meta_slice.len() > (u16::MAX) as usize {
+        return Err(MessageSerializationError::MetadataExceedsLimit);
+    }
+
+    let append_size = HEADER_SIZE + meta_slice.len() + payload_slice.len();
+    if bytes.remaining_mut() < append_size {
+        return Err(MessageSerializationError::TotalSizeExceedsBuffer);
+    }
 
     let mut buf = [0; HEADER_SIZE];
     set_header!(offset, buf, offset);
@@ -107,6 +119,8 @@ pub fn serialize<B: BufMut, M: AsRef<[u8]>, P: AsRef<[u8]>>(
 
     // payload
     bytes.put_slice(payload_slice);
+
+    Ok(())
 }
 
 /// Messages contain finite-sized binary values with an offset from
@@ -370,7 +384,7 @@ impl<R: AsRef<[u8]>> FromIterator<R> for MessageBuf {
     {
         let mut buf = MessageBuf::default();
         for v in iter.into_iter() {
-            buf.push(v);
+            buf.push(v).expect("Total size of messages exceeds usize::MAX");
         }
         buf
     }
@@ -434,20 +448,26 @@ impl MessageBuf {
     }
 
     /// Adds a new message to the buffer.
-    pub fn push<B: AsRef<[u8]>>(&mut self, payload: B) {
+    pub fn push<B: AsRef<[u8]>>(&mut self, payload: B) -> Result<(), MessageSerializationError> {
         // blank offset, expect the log to set the offsets
         // empty metadata
         let meta = [0u8; 0];
-        serialize(&mut self.bytes, 0u64, &meta, payload);
+        serialize(&mut self.bytes, 0u64, &meta, payload)?;
         self.len += 1;
+        Ok(())
     }
 
     /// Adds a new message with metadata.
-    pub fn push_with_metadata<M: AsRef<[u8]>, B: AsRef<[u8]>>(&mut self, metadata: M, payload: B) {
+    pub fn push_with_metadata<M: AsRef<[u8]>, B: AsRef<[u8]>>(
+        &mut self,
+        metadata: M,
+        payload: B,
+    ) -> Result<(), MessageSerializationError> {
         // blank offset, expect the log to set the offsets
         // empty metadata
-        serialize(&mut self.bytes, 0u64, metadata, payload);
+        serialize(&mut self.bytes, 0u64, metadata, payload)?;
         self.len += 1;
+        Ok(())
     }
 
     /// Reads a single message. The reader is expected to have a full message serialized.
