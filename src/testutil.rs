@@ -1,4 +1,4 @@
-use rand::{OsRng, Rng};
+use rand;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,11 +8,10 @@ pub struct TestDir {
 
 impl TestDir {
     pub fn new() -> TestDir {
-        let mut rng = OsRng::new().unwrap();
         let mut path_buf = PathBuf::new();
         path_buf.push("target");
         path_buf.push("test-data");
-        path_buf.push(format!("test-{:020}", rng.gen::<u64>()));
+        path_buf.push(format!("test-{:020}", rand::random::<u64>()));
         fs::create_dir_all(&path_buf).unwrap();
         TestDir { path: path_buf }
     }

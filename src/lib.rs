@@ -199,7 +199,7 @@ impl error::Error for AppendError {
         }
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             AppendError::Io(ref e) => Some(e),
             _ => None,
@@ -256,7 +256,7 @@ impl error::Error for ReadError {
         }
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             ReadError::Io(ref e) => Some(e),
             _ => None,
