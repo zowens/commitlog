@@ -738,6 +738,22 @@ mod tests {
     }
 
     #[test]
+    pub fn reopen_log_with_one_segment_write() {
+        env_logger::try_init().unwrap_or(());
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        {
+            let mut log = CommitLog::new(opts.clone()).unwrap();
+            log.append_msg("Test");
+            log.flush().unwrap();
+        }
+        {
+            let mut log = CommitLog::new(opts.clone()).unwrap();
+            assert_eq!(1, log.next_offset());
+        }
+    }
+
+    #[test]
     pub fn append_message_greater_than_max() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
