@@ -200,45 +200,45 @@ impl Index {
 
         let mmap = unsafe { MmapMut::map_mut(&index_file)? };
 
-        let next_write_pos = {
+        let (next_write_pos, mode) = {
             let index = &mmap[..];
             assert_eq!(index.len() % INDEX_ENTRY_BYTES, 0);
 
             // check if this is a full or partial index
-            let rel_ind_start = index.len() - INDEX_ENTRY_BYTES;
-            let last_val = LittleEndian::read_u32(&index[rel_ind_start..rel_ind_start + 4]);
-            if last_val == 0 {
-                // partial index, search for break point
-                INDEX_ENTRY_BYTES * binary_search(index, |_, file_off| {
-                    // find the first unwritten index entry:
-                    // +#############-----|----------------+
-                    //  written msgs            empty msgs
-                    // if the file pos is 0, we're in the empty msgs, go left
-                    // otherwise, we're in the written msgs, go right
-                    //
-                    // NOTE: it is assumed the segment will never start at 0
-                    // since it contains at least 1 magic byte
-                    if file_off == 0 {
-                        Ordering::Greater
-                    } else {
-                        Ordering::Less
-                    }
-                })
-            } else {
-                index.len()
+            match entry!(index, index.len() - INDEX_ENTRY_BYTES) {
+                (0, 0) => {
+                    // partial index, search for break point
+                    let write_pos = INDEX_ENTRY_BYTES * binary_search(index, |rel_off, file_off| {
+                        // find the first unwritten index entry:
+                        // +#############-----|----------------+
+                        //  written msgs            empty msgs
+                        // if the file pos is 0, we're in the empty msgs, go left
+                        // otherwise, we're in the written msgs, go right
+                        //
+                        // NOTE: it is assumed the segment will never start at 0
+                        // since it contains at least 1 magic byte
+                        if file_off == 0 && rel_off == 0 {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    });
+                    (write_pos, AccessMode::ReadWrite)
+                },
+                _ => (index.len(), AccessMode::Read)
             }
         };
 
         info!(
-            "Opening index {}, next write pos {}",
-            filename, next_write_pos
+            "Opening index {}, next write pos {}, mode {:?}",
+            filename, next_write_pos, mode
         );
 
         Ok(Index {
             file: index_file,
             path: index_path.as_ref().to_path_buf(),
             mmap,
-            mode: AccessMode::ReadWrite,
+            mode,
             next_write_pos,
             last_flush_end_pos: next_write_pos,
             base_offset,
@@ -665,9 +665,8 @@ mod tests {
             }
 
             index.flush_sync().unwrap();
-            index.set_readonly().unwrap();
         }
-        
+
         // now open it
         {
             let mut index_path = PathBuf::new();
@@ -678,7 +677,7 @@ mod tests {
             assert!(meta.is_file());
 
             let mut index = Index::open(&index_path).unwrap();
-            
+
             // Issue a new write, to make sure we're not overwriting things
             {
                 let mut buf = IndexBuf::new(1, 0u64);
@@ -687,6 +686,43 @@ mod tests {
             }
 
             assert_eq!(index.next_write_pos, 16);
+
+            let e = index.read_entry(0);
+            assert!(e.is_some());
+            assert_eq!(e.unwrap().0, 0 as u64);
+            assert_eq!(e.unwrap().1, 2 as u32);
+        }
+    }
+
+    #[test]
+    pub fn open_index_with_one_message_closed() {
+        let dir = TestDir::new();
+        // issue some writes
+        {
+            let mut index = Index::new(&dir, 0u64, 1000usize).unwrap();
+
+            {
+                let mut buf = IndexBuf::new(1, 0u64);
+                buf.push(0, 2);
+                index.append(buf).unwrap();
+            }
+
+            index.flush_sync().unwrap();
+            index.set_readonly().unwrap();
+        }
+
+        // now open it
+        {
+            let mut index_path = PathBuf::new();
+            index_path.push(&dir);
+            index_path.push("00000000000000000000.index");
+
+            let meta = fs::metadata(&index_path).unwrap();
+            assert!(meta.is_file());
+
+            let mut index = Index::open(&index_path).unwrap();
+            assert_eq!(index.next_write_pos, 8);
+            assert_eq!(AccessMode::Read, index.mode);
 
             let e = index.read_entry(0);
             assert!(e.is_some());
