@@ -6,7 +6,7 @@ license = "MIT"
 name = "commitlog"
 readme = "README.md"
 repository = "https://github.com/zowens/commitlog"
-version = "0.1.0"
+version = "0.1.1"
 
 [dependencies]
 byteorder = "1.0"
