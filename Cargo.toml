@@ -17,5 +17,5 @@ memmap = "0.7"
 page_size = "0.4.1"
 
 [dev-dependencies]
-env_logger = "0.6"
+env_logger = "0.7"
 rand = "0.7"
