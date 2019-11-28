@@ -208,24 +208,25 @@ impl Index {
             match entry!(index, index.len() - INDEX_ENTRY_BYTES) {
                 (0, 0) => {
                     // partial index, search for break point
-                    let write_pos = INDEX_ENTRY_BYTES * binary_search(index, |rel_off, file_off| {
-                        // find the first unwritten index entry:
-                        // +#############-----|----------------+
-                        //  written msgs            empty msgs
-                        // if the file pos is 0, we're in the empty msgs, go left
-                        // otherwise, we're in the written msgs, go right
-                        //
-                        // NOTE: it is assumed the segment will never start at 0
-                        // since it contains at least 1 magic byte
-                        if file_off == 0 && rel_off == 0 {
-                            Ordering::Greater
-                        } else {
-                            Ordering::Less
-                        }
-                    });
+                    let write_pos = INDEX_ENTRY_BYTES
+                        * binary_search(index, |rel_off, file_off| {
+                            // find the first unwritten index entry:
+                            // +#############-----|----------------+
+                            //  written msgs            empty msgs
+                            // if the file pos is 0, we're in the empty msgs, go left
+                            // otherwise, we're in the written msgs, go right
+                            //
+                            // NOTE: it is assumed the segment will never start at 0
+                            // since it contains at least 1 magic byte
+                            if file_off == 0 && rel_off == 0 {
+                                Ordering::Greater
+                            } else {
+                                Ordering::Less
+                            }
+                        });
                     (write_pos, AccessMode::ReadWrite)
-                },
-                _ => (index.len(), AccessMode::Read)
+                }
+                _ => (index.len(), AccessMode::Read),
             }
         };
 
@@ -285,7 +286,6 @@ impl Index {
             AccessMode::ReadWrite,
             "Attempt to append to readonly index"
         );
-
 
         // check if we need to resize
         if self.size() < (self.next_write_pos + offsets.0.len()) {
