@@ -384,7 +384,8 @@ impl<R: AsRef<[u8]>> FromIterator<R> for MessageBuf {
     {
         let mut buf = MessageBuf::default();
         for v in iter.into_iter() {
-            buf.push(v).expect("Total size of messages exceeds usize::MAX");
+            buf.push(v)
+                .expect("Total size of messages exceeds usize::MAX");
         }
         buf
     }
