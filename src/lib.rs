@@ -40,7 +40,6 @@
 //!     //    1 - second message
 //! }
 //! ```
-#![feature(test)]
 
 extern crate byteorder;
 extern crate crc32c;
@@ -55,14 +54,12 @@ extern crate env_logger;
 
 #[cfg(test)]
 extern crate rand;
-#[cfg(test)]
-extern crate test;
 
 mod file_set;
-mod index;
+pub mod index;
 pub mod message;
 pub mod reader;
-mod segment;
+pub mod segment;
 #[cfg(test)]
 mod testutil;
 
@@ -584,9 +581,9 @@ mod tests {
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
         let mut buf = {
             let mut buf = MessageBuf::default();
-            buf.push(b"123456");
-            buf.push(b"789012");
-            buf.push(b"345678");
+            buf.push(b"123456").unwrap();
+            buf.push(b"789012").unwrap();
+            buf.push(b"345678").unwrap();
             buf
         };
         let range = log.append(&mut buf).unwrap();
@@ -741,14 +738,14 @@ mod tests {
     pub fn reopen_log_with_one_segment_write() {
         env_logger::try_init().unwrap_or(());
         let dir = TestDir::new();
-        let mut opts = LogOptions::new(&dir);
+        let opts = LogOptions::new(&dir);
         {
             let mut log = CommitLog::new(opts.clone()).unwrap();
-            log.append_msg("Test");
+            log.append_msg("Test").unwrap();
             log.flush().unwrap();
         }
         {
-            let mut log = CommitLog::new(opts.clone()).unwrap();
+            let log = CommitLog::new(opts.clone()).unwrap();
             assert_eq!(1, log.next_offset());
         }
     }
@@ -779,11 +776,11 @@ mod tests {
         // append 5 messages
         {
             let mut buf = MessageBuf::default();
-            buf.push(b"123456");
-            buf.push(b"789012");
-            buf.push(b"345678");
-            buf.push(b"aaaaaa");
-            buf.push(b"bbbbbb");
+            buf.push(b"123456").unwrap();
+            buf.push(b"789012").unwrap();
+            buf.push(b"345678").unwrap();
+            buf.push(b"aaaaaa").unwrap();
+            buf.push(b"bbbbbb").unwrap();
             log.append(&mut buf).unwrap();
         }
 
