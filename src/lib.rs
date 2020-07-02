@@ -56,10 +56,16 @@ extern crate env_logger;
 extern crate rand;
 
 mod file_set;
+#[cfg(feature = "bench-private")]
 pub mod index;
+#[cfg(not(feature = "bench-private"))]
+mod index;
 pub mod message;
 pub mod reader;
+#[cfg(feature = "bench-private")]
 pub mod segment;
+#[cfg(not(feature = "bench-private"))]
+mod segment;
 #[cfg(test)]
 mod testutil;
 

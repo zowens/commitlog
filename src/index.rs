@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::{u64, usize};
 
-/// Number of byes in each entry pair
+/// Number of bytes in each entry pair
 pub const INDEX_ENTRY_BYTES: usize = 8;
 /// Number of bytes contained in the base name of the file.
 pub const INDEX_FILE_NAME_LEN: usize = 20;
