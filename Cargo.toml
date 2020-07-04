@@ -12,7 +12,7 @@ edition = "2018"
 [features]
 # Enable benchmark of the private api. This flag should be used only
 # for benchmarking purposes!
-bench-private = []
+internals = []
 
 [dependencies]
 byteorder = "1.0"
@@ -30,7 +30,7 @@ rand = "0.7"
 [[bench]]
 name = "index"
 harness = false
-required-features = ["bench-private"]
+required-features = ["internals"]
 
 [[bench]]
 name = "log-append"
@@ -43,4 +43,4 @@ harness = false
 [[bench]]
 name = "segment"
 harness = false
-required-features = ["bench-private"]
+required-features = ["internals"]

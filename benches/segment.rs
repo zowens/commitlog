@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use commitlog::message::MessageBuf;
-use commitlog::segment::Segment;
+use commitlog::Segment;
 use testutil::TestDir;
 
 mod testutil {

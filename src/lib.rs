@@ -56,15 +56,9 @@ extern crate env_logger;
 extern crate rand;
 
 mod file_set;
-#[cfg(feature = "bench-private")]
-pub mod index;
-#[cfg(not(feature = "bench-private"))]
 mod index;
 pub mod message;
 pub mod reader;
-#[cfg(feature = "bench-private")]
-pub mod segment;
-#[cfg(not(feature = "bench-private"))]
 mod segment;
 #[cfg(test)]
 mod testutil;
@@ -82,6 +76,8 @@ use file_set::FileSet;
 use message::MessageError;
 use message::{MessageBuf, MessageSet, MessageSetMut};
 use reader::{LogSliceReader, MessageBufReader};
+#[cfg(feature = "internals")]
+pub use crate::{index::Index, index::IndexBuf, segment::Segment};
 
 /// Offset of an appended log segment.
 pub type Offset = u64;
