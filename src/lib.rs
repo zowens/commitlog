@@ -486,15 +486,20 @@ impl CommitLog {
     }
 
     /// Truncates a file after the offset supplied. The resulting log will
-    /// contain entries up to the offset.
+    /// contain entries up to and including the offset.
     pub fn truncate(&mut self, offset: Offset) -> io::Result<()> {
+        self.truncate_at(offset + 1)
+    }
+
+    /// Truncates a file at the offset supplied. The resulting log will
+    /// contain entries up to but not including the offset.
+    pub fn truncate_at(&mut self, offset: Offset) -> io::Result<()> {
         info!("Truncating log to offset {}", offset);
 
         // remove index/segment files rolled after the offset
         let to_remove = self.file_set.take_after(offset);
         for p in to_remove {
             trace!("Removing segment and index starting at {}", p.0.starting_offset());
-            assert!(p.0.starting_offset() > offset);
 
             p.0.remove()?;
             p.1.remove()?;
@@ -878,7 +883,7 @@ mod tests {
             ],
         );
 
-        // truncate to offset 2 (should remove 2 messages)
+        // truncate to offset 7 (should remove 0 messages)
         log.truncate(7).expect("Unable to truncate file");
 
         assert_eq!(Some(6), log.last_offset());
@@ -897,6 +902,50 @@ mod tests {
                 "00000000000000000006.index",
             ],
         );
+    }
+
+    #[test]
+    pub fn truncate_at_zero_drops_whole_log() {
+        env_logger::try_init().unwrap_or(());
+        let dir = TestDir::new();
+
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(52);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        // append 6 messages (4 segments)
+        {
+            for _ in 0..7 {
+                log.append_msg(b"12345").unwrap();
+            }
+        }
+
+        // ensure we have the expected index/logs
+        expect_files(
+            &dir,
+            vec![
+                "00000000000000000000.index",
+                "00000000000000000000.log",
+                "00000000000000000002.log",
+                "00000000000000000002.index",
+                "00000000000000000004.log",
+                "00000000000000000004.index",
+                "00000000000000000006.log",
+                "00000000000000000006.index",
+            ],
+        );
+
+        // truncate_at to offset 0 (should remove 7 messages)
+        log.truncate_at(0).expect("Unable to truncate file");
+
+        assert_eq!(None, log.last_offset());
+
+        // ensure we have the expected index/logs
+        expect_files(&dir, vec![
+            "00000000000000000000.index",
+            "00000000000000000000.log",
+        ]);
     }
 
     fn expect_files<P: AsRef<Path>, I>(dir: P, files: I)

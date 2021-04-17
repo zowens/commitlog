@@ -143,7 +143,7 @@ impl FileSet {
         //    offset = 6
         //    [0 5 10 15] => split key 5
         //
-        // midpoint  is then used as the active index/segment pair
+        // midpoint is then used as the active index/segment pair
         let split_key = match self.closed.range(..=offset).next_back().map(|p| p.0).cloned() {
             Some(key) => {
                 trace!("File set split key for truncation {}", key);
