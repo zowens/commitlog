@@ -322,18 +322,18 @@ impl Index {
         fs::remove_file(path)
     }
 
-    /// Truncates to an offset, inclusive. The file length of the
+    /// Truncates to an offset, exclusive. The file length of the
     /// segment for truncation is returned.
     pub fn truncate(&mut self, offset: Offset) -> Option<u32> {
         // find the next offset position in order to inform
         // the truncation of the segment
-        let next_pos = match self.find_index_pos(offset + 1) {
+        let next_pos = match self.find_index_pos(offset) {
             Some(i) => {
                 trace!("Found offset mem offset {}", i);
                 i
             }
             None => {
-                trace!("No offset {} found in index", offset + 1);
+                trace!("No offset {} found in index", offset);
                 return None;
             }
         };
@@ -347,7 +347,7 @@ impl Index {
         // truncation. This likely occurs when the last offset is the offset
         // requested for truncation OR the offset for truncation is > than the
         // last offset.
-        if u64::from(off) + self.base_offset <= offset {
+        if u64::from(off) + self.base_offset < offset {
             trace!("Truncated to exact segment boundary, no need to truncate segment");
             return None;
         }
@@ -973,7 +973,7 @@ mod tests {
         buf.push(14, 50);
         index.append(buf).unwrap();
 
-        let file_len = index.truncate(12);
+        let file_len = index.truncate(13);
         assert_eq!(Some(40), file_len);
         assert_eq!(13, index.next_offset());
         assert_eq!(3 * INDEX_ENTRY_BYTES, index.next_write_pos);
@@ -998,7 +998,7 @@ mod tests {
         buf.push(14, 50);
         index.append(buf).unwrap();
 
-        let file_len = index.truncate(14);
+        let file_len = index.truncate(15);
         assert_eq!(None, file_len);
         assert_eq!(15, index.next_offset());
         assert_eq!(5 * INDEX_ENTRY_BYTES, index.next_write_pos);
