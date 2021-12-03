@@ -1,8 +1,7 @@
 use super::Offset;
-use log::{trace, info, warn};
 use byteorder::{ByteOrder, LittleEndian};
+use log::{info, trace, warn};
 use memmap2::MmapMut;
-use page_size;
 use std::{
     cmp::Ordering,
     fs::{self, File, OpenOptions},
@@ -16,7 +15,7 @@ pub const INDEX_ENTRY_BYTES: usize = 8;
 /// Number of bytes contained in the base name of the file.
 pub const INDEX_FILE_NAME_LEN: usize = 20;
 /// File extension for the index file.
-pub static INDEX_FILE_NAME_EXTENSION: &'static str = "index";
+pub static INDEX_FILE_NAME_EXTENSION: &str = "index";
 
 #[inline]
 fn binary_search<F>(index: &[u8], f: F) -> usize
@@ -243,6 +242,10 @@ impl Index {
     #[inline]
     pub fn starting_offset(&self) -> u64 {
         self.base_offset
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.next_write_pos == 0
     }
 
     #[inline]

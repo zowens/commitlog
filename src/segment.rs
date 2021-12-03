@@ -9,7 +9,7 @@ use std::{
 /// Number of bytes contained in the base name of the file.
 pub static SEGMENT_FILE_NAME_LEN: usize = 20;
 /// File extension for the segment file.
-pub static SEGMENT_FILE_NAME_EXTENSION: &'static str = "log";
+pub static SEGMENT_FILE_NAME_EXTENSION: &str = "log";
 
 /// Magic that appears in the header of the segment for version 1.
 ///
