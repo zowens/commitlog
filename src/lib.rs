@@ -533,7 +533,10 @@ impl CommitLog {
 
     fn delete_segments(segments: Vec<(Index, segment::Segment)>) -> io::Result<()> {
         for p in segments {
-            trace!("Removing segment and index starting at {}", p.0.starting_offset());
+            trace!(
+                "Removing segment and index starting at {}",
+                p.0.starting_offset()
+            );
             p.0.remove()?;
             p.1.remove()?;
         }
@@ -970,7 +973,8 @@ mod tests {
         );
 
         // remove segments < 3 which is just segment 0
-        log.trim_segments_before(3).expect("Unable to truncate file");
+        log.trim_segments_before(3)
+            .expect("Unable to truncate file");
 
         assert_eq!(Some(6), log.last_offset());
 
@@ -988,7 +992,9 @@ mod tests {
         );
 
         // make sure the messages are really gone
-        let reader = log.read(0, ReadLimit::default()).expect("Unabled to grab reader");
+        let reader = log
+            .read(0, ReadLimit::default())
+            .expect("Unabled to grab reader");
         assert_eq!(2, reader.iter().next().unwrap().offset());
     }
 
@@ -1025,7 +1031,8 @@ mod tests {
         );
 
         // remove segments < 3 which is just segment 0
-        log.trim_segments_before(4).expect("Unable to truncate file");
+        log.trim_segments_before(4)
+            .expect("Unable to truncate file");
 
         assert_eq!(Some(6), log.last_offset());
 
@@ -1041,7 +1048,9 @@ mod tests {
         );
 
         // make sure the messages are really gone
-        let reader = log.read(0, ReadLimit::default()).expect("Unabled to grab reader");
+        let reader = log
+            .read(0, ReadLimit::default())
+            .expect("Unabled to grab reader");
         assert_eq!(4, reader.iter().next().unwrap().offset());
     }
 
@@ -1065,11 +1074,14 @@ mod tests {
                 }
             }
 
-            log.trim_segments_before(trim_off).expect("Unable to truncate file");
+            log.trim_segments_before(trim_off)
+                .expect("Unable to truncate file");
             assert_eq!(Some(TOTAL_MESSAGES - 1), log.last_offset());
 
             // make sure the messages are really gone
-            let reader = log.read(0, ReadLimit::default()).expect("Unabled to grab reader");
+            let reader = log
+                .read(0, ReadLimit::default())
+                .expect("Unabled to grab reader");
             let start_off = reader.iter().next().unwrap().offset();
             assert!(start_off <= trim_off);
         }
@@ -1095,17 +1107,20 @@ mod tests {
         log.trim_segments_before(2).unwrap();
 
         {
-            let reader = log.read(0, ReadLimit::default()).expect("Unabled to grab reader");
+            let reader = log
+                .read(0, ReadLimit::default())
+                .expect("Unabled to grab reader");
             assert_eq!(2, reader.iter().next().unwrap().offset());
         }
 
         log.trim_segments_before(10).unwrap();
 
         {
-            let reader = log.read(0, ReadLimit::default()).expect("Unabled to grab reader");
+            let reader = log
+                .read(0, ReadLimit::default())
+                .expect("Unabled to grab reader");
             assert_eq!(10, reader.iter().next().unwrap().offset());
         }
-
     }
 
     fn expect_files<P: AsRef<Path>, I>(dir: P, files: I)

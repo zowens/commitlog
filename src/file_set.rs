@@ -113,7 +113,10 @@ impl FileSet {
     pub fn find(&self, offset: u64) -> &(Index, Segment) {
         let active_seg_start_off = self.active.0.starting_offset();
         if offset < active_seg_start_off {
-            trace!("Index is contained in the active index for offset {}", offset);
+            trace!(
+                "Index is contained in the active index for offset {}",
+                offset
+            );
             if let Some(entry) = self.closed.range(..=offset).next_back().map(|p| p.1) {
                 return entry;
             }
@@ -190,7 +193,13 @@ impl FileSet {
     pub fn remove_before(&mut self, offset: u64) -> Vec<(Index, Segment)> {
         // split such that self.closed contains [..offset), suffix=[offset,...]
         let split_point = {
-            match self.closed.range(..=offset).next_back().map(|e| e.0).cloned() {
+            match self
+                .closed
+                .range(..=offset)
+                .next_back()
+                .map(|e| e.0)
+                .cloned()
+            {
                 Some(off) => off,
                 None => return vec![],
             }
