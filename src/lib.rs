@@ -1184,8 +1184,6 @@ mod tests {
         assert_eq!(0, start_off);
     }
 
-
-
     fn expect_files<P: AsRef<Path>, I>(dir: P, files: I)
     where
         I: IntoIterator<Item = &'static str>,
