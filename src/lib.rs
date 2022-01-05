@@ -525,6 +525,12 @@ impl CommitLog {
         Self::delete_segments(segments_to_remove)
     }
 
+    /// Removes segment files that are read-only.
+    pub fn trim_inactive_segments(&mut self) -> io::Result<()> {
+        let active_offset_start = self.file_set.active_index().starting_offset();
+        self.trim_segments_before(active_offset_start)
+    }
+
     /// Forces a flush of the log.
     pub fn flush(&mut self) -> io::Result<()> {
         self.file_set.active_segment_mut().flush_sync()?;
@@ -1122,6 +1128,63 @@ mod tests {
             assert_eq!(10, reader.iter().next().unwrap().offset());
         }
     }
+
+    #[test]
+    pub fn trim_inactive_logic_check() {
+        env_logger::try_init().unwrap_or(());
+        const TOTAL_MESSAGES: u64 = 20;
+
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(52);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        // append the messages
+        {
+            for _ in 0..TOTAL_MESSAGES {
+                log.append_msg(b"12345").unwrap();
+            }
+        }
+
+        log.trim_inactive_segments()
+            .expect("Unable to truncate file");
+        assert_eq!(Some(TOTAL_MESSAGES - 1), log.last_offset());
+
+        // make sure the messages are really gone
+        let reader = log
+            .read(0, ReadLimit::default())
+            .expect("Unabled to grab reader");
+        let start_off = reader.iter().next().unwrap().offset();
+        assert_eq!(16, start_off);
+    }
+
+    #[test]
+    pub fn trim_inactive_logic_check_zero_messages() {
+        env_logger::try_init().unwrap_or(());
+
+        let dir = TestDir::new();
+        let mut opts = LogOptions::new(&dir);
+        opts.index_max_items(20);
+        opts.segment_max_bytes(52);
+        let mut log = CommitLog::new(opts).unwrap();
+
+        log.trim_inactive_segments()
+            .expect("Unable to truncate file");
+        assert_eq!(None, log.last_offset());
+
+        // append the messages
+        log.append_msg(b"12345").unwrap();
+
+        // make sure the messages are really gone
+        let reader = log
+            .read(0, ReadLimit::default())
+            .expect("Unabled to grab reader");
+        let start_off = reader.iter().next().unwrap().offset();
+        assert_eq!(0, start_off);
+    }
+
+
 
     fn expect_files<P: AsRef<Path>, I>(dir: P, files: I)
     where
