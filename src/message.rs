@@ -632,6 +632,8 @@ mod tests {
     pub fn messagebuf_fromiterator() {
         let buf = vec!["test", "123"].iter().collect::<MessageBuf>();
         assert_eq!(2, buf.len());
+        assert_eq!(b"test", buf.iter().nth(0).unwrap().payload());
+        assert_eq!(b"123", buf.iter().nth(1).unwrap().payload());
     }
 
     #[test]
