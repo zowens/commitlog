@@ -678,6 +678,25 @@ mod tests {
     }
 
     #[test]
+    pub fn read_large_message_error() {
+        let dir = TestDir::new();
+        let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
+        let value = std::iter::repeat('a').take(900_000).collect::<String>();
+        log.append_msg(value).unwrap();
+        let res = log.read(0, ReadLimit::default());
+        match res {
+            Err(ReadError::Io(err)) => {
+                assert_eq!(io::ErrorKind::InvalidInput, err.kind());
+                assert_eq!(
+                    "Message exceeded max byte size",
+                    err.get_ref().unwrap().to_string()
+                );
+            }
+            _ => panic!("Expected ReadError::Io"),
+        }
+    }
+
+    #[test]
     pub fn reopen_log() {
         env_logger::try_init().unwrap_or(());
 
