@@ -682,7 +682,7 @@ mod tests {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
         let value = std::iter::repeat('a').take(900_000).collect::<String>();
-        log.append_msg(value).unwrap();
+        log.append_msg(&value).unwrap();
         let res = log.read(0, ReadLimit::default());
         match res {
             Err(ReadError::Io(err)) => {
@@ -694,6 +694,15 @@ mod tests {
             }
             _ => panic!("Expected ReadError::Io"),
         }
+        assert_eq!(
+            value.as_bytes(),
+            log.read(0, ReadLimit::max_bytes(1_000_000))
+                .unwrap()
+                .iter()
+                .nth(0)
+                .unwrap()
+                .payload()
+        );
     }
 
     #[test]
