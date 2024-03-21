@@ -678,6 +678,34 @@ mod tests {
     }
 
     #[test]
+    pub fn read_large_message_error() {
+        let dir = TestDir::new();
+        let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
+        let value = std::iter::repeat('a').take(900_000).collect::<String>();
+        log.append_msg(&value).unwrap();
+        let res = log.read(0, ReadLimit::default());
+        match res {
+            Err(ReadError::Io(err)) => {
+                assert_eq!(io::ErrorKind::InvalidInput, err.kind());
+                assert_eq!(
+                    "Message exceeded max byte size",
+                    err.get_ref().unwrap().to_string()
+                );
+            }
+            _ => panic!("Expected ReadError::Io"),
+        }
+        assert_eq!(
+            value.as_bytes(),
+            log.read(0, ReadLimit::max_bytes(1_000_000))
+                .unwrap()
+                .iter()
+                .nth(0)
+                .unwrap()
+                .payload()
+        );
+    }
+
+    #[test]
     pub fn reopen_log() {
         env_logger::try_init().unwrap_or(());
 
@@ -759,19 +787,12 @@ mod tests {
     pub fn append_message_greater_than_max() {
         let dir = TestDir::new();
         let mut log = CommitLog::new(LogOptions::new(&dir)).unwrap();
-        //create vector with 1.2mb of size, u8 = 1 byte thus,
-        //1mb = 1000000 bytes, 1200000 items needed
-        let mut value = String::new();
-        let mut target = 0;
-        while target != 2000000 {
-            value.push('a');
-            target += 1;
-        }
+        // Try to write a value larger than the 1mb default message_max_bytes limit
+        let value = std::iter::repeat('a').take(1_200_000).collect::<String>();
         let res = log.append_msg(value);
-        //will fail if no error is found which means a message greater than the limit
-        // passed through
-        assert!(res.is_err());
+        assert!(matches!(res.err(), Some(AppendError::MessageSizeExceeded)));
         log.flush().unwrap();
+        assert_eq!(0, log.next_offset());
     }
 
     #[test]
